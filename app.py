@@ -5,7 +5,7 @@ from flask import Flask, request
 
 app = Flask(__name__)
 
-BOT_TOKEN = ""
+BOT_TOKEN = os.environ["BOT_TOKEN"]
 
 
 @app.route("/")
