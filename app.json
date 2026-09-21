@@ -1,0 +1,51 @@
+{
+  "name": "Book Sharing Bot",
+  "description": "A Telegram bot to share and access books from Anime Discussion 2.0",
+  "keywords": [
+    "telegram",
+    "book",
+    "sharing",
+    "bot"
+  ],
+  "repository": "",
+  "env": {
+    "TG_BOT_TOKEN": {
+      "description": "Your Bot token, Get it from @Botfather",
+      "value": ""
+    },
+    "OWNER_ID": {
+      "description": "An integer of consisting of your owner ID",
+      "value": ""
+    },
+    "APP_ID": {
+      "description": "your app id, take it from my.telegram.org",
+      "value": ""
+    },
+    "API_HASH": {
+      "description": "your api hash, take it from my.telegram.org",
+      "value": ""
+    },
+    "CHANNEL_ID": {
+      "description": "make a channel (database channel), then make the bot as admin in channel, and it's id",
+      "value": "-100"
+    },
+    "FORCE_SUB_CHANNEL": {
+      "description": "id of the channel or group, if you want enable force sub feature else put 0",
+      "value": "0"
+    },
+    "START_MESSAGE": {
+      "description": "Optional: start message of bot, use HTML parsemode format",
+      "value": "Hello {first}. I am book sharing bot which will help you get the books which are agreed to read by people in anime discussion 2.0."
+    },
+    "ADMINS": {
+      "description": "A space separated list of user_ids of Admins, they can only create links",
+      "value": "",
+      "required": false
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ]
+}

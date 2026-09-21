@@ -1,0 +1,32 @@
+### Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+### Environments
+.env
+.venv
+env/
+venv/
+
+### Bot specific
+Bot.session
+Bot.session-journal
+admins.json
+filesharingbot.txt
+*.log
+
+### IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+### OS
+.DS_Store
+Thumbs.db
