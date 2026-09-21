@@ -5,3 +5,6 @@ pyromod==1.5
 python-dotenv
 # --- For-Web-Response ------- #
 aiohttp
+flask
+requests
+gunicorn
