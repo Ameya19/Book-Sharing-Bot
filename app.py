@@ -7,6 +7,7 @@ import threading
 from html import escape
 from datetime import datetime
 from pathlib import Path
+import tempfile
 
 import requests
 from flask import Flask, request, jsonify
@@ -1057,6 +1058,155 @@ def process_channel_post(message):
         except Exception as exc:
             print(f"Channel markup update failed: {exc}")
 
+def download_telegram_file(file_id):
+    """Download a Telegram file and return its local path."""
+
+    # Get Telegram file information
+    response = telegram_request(
+        "getFile",
+        {"file_id": file_id}
+    )
+
+    if not response.get("ok"):
+        return None
+
+    file_path = response["result"]["file_path"]
+
+    # Download the actual file
+    url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+
+    response = requests.get(url, stream=True)
+
+    if not response.ok:
+        return None
+
+    extension = os.path.splitext(file_path)[1]
+
+    temp_file = tempfile.NamedTemporaryFile(
+        delete=False,
+        suffix=extension
+    )
+
+    with temp_file as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                f.write(chunk)
+
+    return temp_file.name
+
+def handle_rename(message, args):
+
+    chat_id = message["chat"]["id"]
+    reply = message.get("reply_to_message")
+
+    # Must reply to a message
+    if not reply:
+        send_message(
+            chat_id,
+            "❌ Reply to a document with:\n\n"
+            "/rename New File Name.pdf"
+        )
+        return
+
+    # Check if replied message contains a document
+    document = reply.get("document")
+
+    if not document:
+        send_message(
+            chat_id,
+            "❌ The replied message does not contain a document."
+        )
+        return
+
+    # Get new filename
+    new_name = " ".join(args).strip()
+
+    if not new_name:
+        send_message(
+            chat_id,
+            "❌ Please provide a new filename.\n\n"
+            "Example:\n"
+            "/rename My New Book.pdf"
+        )
+        return
+
+    # Prevent invalid filename
+    invalid_chars = '<>:"/\\|?*'
+
+    if any(char in new_name for char in invalid_chars):
+        send_message(
+            chat_id,
+            "❌ Invalid filename.\n"
+            "Please remove characters like: < > : \" / \\ | ? *"
+        )
+        return
+
+    file_id = document["file_id"]
+
+    send_message(
+        chat_id,
+        "⏳ Downloading and renaming the file..."
+    )
+
+    temp_path = None
+
+    try:
+        temp_path = download_telegram_file(file_id)
+
+        if not temp_path:
+            send_message(
+                chat_id,
+                "❌ Failed to download the file from Telegram."
+            )
+            return
+
+        # Upload with new filename
+        with open(temp_path, "rb") as file:
+
+            response = requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument",
+                data={
+                    "chat_id": chat_id,
+                    "caption": reply.get("caption", "")
+                },
+                files={
+                    "document": (
+                        new_name,
+                        file
+                    )
+                }
+            )
+
+        result = response.json()
+
+        if not result.get("ok"):
+            send_message(
+                chat_id,
+                f"❌ Failed to upload renamed file.\n\n"
+                f"{result.get('description', 'Unknown error')}"
+            )
+            return
+
+        send_message(
+            chat_id,
+            f"✅ File renamed successfully!\n\n"
+            f"New name: `{new_name}`"
+        )
+
+    except Exception as e:
+
+        print("Rename error:", e)
+
+        send_message(
+            chat_id,
+            f"❌ Error while renaming file:\n`{str(e)}`"
+        )
+
+    finally:
+
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
 
 # ------------------------- update dispatcher -------------------------
 
@@ -1107,6 +1257,8 @@ def process_message(message):
         handle_listadmins(message)
     elif command == "/stats" and is_private(message):
         handle_stats(message)
+    elif command == "/rename":
+        return handle_rename(message, args)
     elif is_private(message) and process_pending(message):
         pass
     elif is_private(message) and not command and USER_REPLY_TEXT:
@@ -1215,7 +1367,6 @@ def get_webhook():
         return jsonify(tg_get("getWebhookInfo"))
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
-
 
 # Initialize once when the Gunicorn worker imports this module.
 try:
