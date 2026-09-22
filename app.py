@@ -79,6 +79,7 @@ BOT_ME = None
 DATA_DIR = Path(os.environ.get("DATA_DIR", "."))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 USERS_FILE = DATA_DIR / "users.json"
+USER_PROFILES_FILE = DATA_DIR / "user_profiles.json"
 ADMINS_FILE = DATA_DIR / "admins.json"
 FILES_FILE = DATA_DIR / "files_index.json"
 
@@ -109,6 +110,8 @@ def save_json(path, data):
 
 
 users = set(int(x) for x in load_json(USERS_FILE, []) if str(x).lstrip("-").isdigit())
+# Maps normalized Telegram usernames to user IDs for users who have interacted with the bot.
+user_profiles = load_json(USER_PROFILES_FILE, {})
 stored_admins = set(int(x) for x in load_json(ADMINS_FILE, []) if str(x).lstrip("-").isdigit())
 ADMINS.update(stored_admins)
 
@@ -117,11 +120,58 @@ ADMINS.update(stored_admins)
 file_index = load_json(FILES_FILE, [])
 
 
-def add_user(user_id):
+def add_user(user_id, user=None):
     with state_lock:
         if user_id not in users:
             users.add(user_id)
             save_json(USERS_FILE, sorted(users))
+
+        if user:
+            username = (user.get("username") or "").strip().lstrip("@").lower()
+            if username:
+                user_profiles[username] = {
+                    "id": user_id,
+                    "username": user.get("username"),
+                    "first_name": user.get("first_name", ""),
+                    "last_name": user.get("last_name", "")
+                }
+                save_json(USER_PROFILES_FILE, user_profiles)
+
+
+def resolve_user_id(identifier, message=None):
+    """Resolve a numeric Telegram ID or a username to a user ID.
+
+    Telegram Bot API cannot resolve an arbitrary person's @username to an ID.
+    Username lookup therefore works for users who have previously interacted
+    with this bot (their username is stored from incoming updates). A reply to
+    a user's message is also supported and is the most reliable method.
+    """
+    if not identifier:
+        return None, "Please provide a user ID or @username."
+
+    value = identifier.strip()
+
+    if value.lstrip("-").isdigit():
+        return int(value), None
+
+    username = value.lstrip("@").lower()
+
+    if message:
+        reply = message.get("reply_to_message") or {}
+        replied_user = reply.get("from") or {}
+        replied_username = (replied_user.get("username") or "").lower()
+        if replied_user.get("id") and (not username or replied_username == username):
+            return int(replied_user["id"]), None
+
+    profile = user_profiles.get(username)
+    if profile and profile.get("id"):
+        return int(profile["id"]), None
+
+    return None, (
+        f"I couldn't find @{username}. The user must first start or interact with "
+        "this bot so Telegram provides their user ID. Alternatively, reply to "
+        "one of their messages with the admin command."
+    )
 
 
 def remove_user(user_id):
@@ -805,13 +855,24 @@ def process_pending(message):
 def handle_addadmin(message, args):
     if not is_admin(user_id(message)):
         return
-    if not args:
-        send_message(message["chat"]["id"], "Usage: /addadmin <user_id>")
+
+    # /addadmin @username, /addadmin 123456789, or reply to a user's message
+    identifier = args[0] if args else None
+    if not identifier and message.get("reply_to_message"):
+        replied_user = (message["reply_to_message"].get("from") or {})
+        identifier = replied_user.get("username") or str(replied_user.get("id") or "")
+
+    if not identifier:
+        send_message(
+            message["chat"]["id"],
+            "Usage: /addadmin @username or /addadmin <user_id>\n"
+            "You can also reply to the user's message with /addadmin."
+        )
         return
-    try:
-        new_id = int(args[0])
-    except ValueError:
-        send_message(message["chat"]["id"], "Invalid user ID. Please provide a numeric ID.")
+
+    new_id, error = resolve_user_id(identifier, message)
+    if new_id is None:
+        send_message(message["chat"]["id"], error)
         return
     if new_id == OWNER_ID:
         send_message(message["chat"]["id"], "You are already the owner.")
@@ -819,21 +880,35 @@ def handle_addadmin(message, args):
     if new_id in ADMINS:
         send_message(message["chat"]["id"], "This user is already an admin.")
         return
+
     ADMINS.add(new_id)
     persist_admins()
-    send_message(message["chat"]["id"], f"User <code>{new_id}</code> has been added as admin.")
+    username = identifier if str(identifier).startswith("@") else ""
+    label = f"{username} (<code>{new_id}</code>)" if username else f"<code>{new_id}</code>"
+    send_message(message["chat"]["id"], f"User {label} has been added as admin.")
 
 
 def handle_removeadmin(message, args):
     if not is_admin(user_id(message)):
         return
-    if not args:
-        send_message(message["chat"]["id"], "Usage: /removeadmin <user_id>")
+
+    # /removeadmin @username, /removeadmin 123456789, or reply to a user's message
+    identifier = args[0] if args else None
+    if not identifier and message.get("reply_to_message"):
+        replied_user = (message["reply_to_message"].get("from") or {})
+        identifier = replied_user.get("username") or str(replied_user.get("id") or "")
+
+    if not identifier:
+        send_message(
+            message["chat"]["id"],
+            "Usage: /removeadmin @username or /removeadmin <user_id>\n"
+            "You can also reply to the user's message with /removeadmin."
+        )
         return
-    try:
-        remove_id = int(args[0])
-    except ValueError:
-        send_message(message["chat"]["id"], "Invalid user ID. Please provide a numeric ID.")
+
+    remove_id, error = resolve_user_id(identifier, message)
+    if remove_id is None:
+        send_message(message["chat"]["id"], error)
         return
     if remove_id == OWNER_ID:
         send_message(message["chat"]["id"], "You cannot remove the owner.")
@@ -841,9 +916,12 @@ def handle_removeadmin(message, args):
     if remove_id not in ADMINS:
         send_message(message["chat"]["id"], "This user is not an admin.")
         return
+
     ADMINS.discard(remove_id)
     persist_admins()
-    send_message(message["chat"]["id"], f"User <code>{remove_id}</code> has been removed from admins.")
+    username = identifier if str(identifier).startswith("@") else ""
+    label = f"{username} (<code>{remove_id}</code>)" if username else f"<code>{remove_id}</code>"
+    send_message(message["chat"]["id"], f"User {label} has been removed from admins.")
 
 
 def handle_listadmins(message):
@@ -985,7 +1063,7 @@ def process_channel_post(message):
 def process_message(message):
     uid = user_id(message)
     if uid:
-        add_user(uid)
+        add_user(uid, message.get("from"))
 
     # Batch/genlink follow-up messages must be handled BEFORE admin-media
     # handling, because a forwarded document is a valid batch/genlink input.
