@@ -15,12 +15,26 @@ def home():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
+
     update = request.get_json()
 
-    print("Received update:")
-    print(update)
+    if "message" not in update:
+        return "OK", 200
 
-    # We will process the Telegram update here
+    message = update["message"]
+
+    chat_id = message["chat"]["id"]
+    text = message.get("text", "")
+
+    if text == "/start":
+
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": "Welcome to the Book Sharing Bot!"
+            }
+        )
 
     return "OK", 200
 
