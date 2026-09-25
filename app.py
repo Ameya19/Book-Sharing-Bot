@@ -43,7 +43,7 @@ START_PIC = os.environ.get("START_PIC", "")
 START_MSG = os.environ.get(
     "START_MESSAGE",
     "Hello {first}. I am Annie's Bookshelf which will help you get the books "
-    "which are agreed to read by people in Annie's Bookshelf."
+    "which are agreed to read by people."
 )
 FORCE_MSG = os.environ.get(
     "FORCE_SUB_MESSAGE",
