@@ -157,10 +157,10 @@ async def start_command(client: Client, message: Message):
 
 @Bot.on_message(filters.command('help') & filters.private & subscribed)
 async def help_command(client: Client, message: Message):
-    help_text = """<b>Book Sharing Bot - Help</b>
+    help_text = """<b>Annie's Bookshelf - Help</b>
 
 <b>What is this bot?</b>
-This bot helps you access books that are agreed to read by people in Anime Discussion 2.0.
+This bot helps you access books that are agreed to read by people in Annie's Bookshelf.
 
 <b>How to use?</b>
 1. Click on <b>/files</b> to see all available books

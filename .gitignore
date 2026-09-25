@@ -18,7 +18,7 @@ venv/
 Bot.session
 Bot.session-journal
 admins.json
-filesharingbot.txt
+anniesbookshelf.txt
 *.log
 
 ### IDE

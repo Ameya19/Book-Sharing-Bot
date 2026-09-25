@@ -1,6 +1,6 @@
 {
-  "name": "Book Sharing Bot",
-  "description": "A Telegram bot to share and access books from Anime Discussion 2.0",
+  "name": "Annie's Bookshelf",
+  "description": "A Telegram bot to share and access books from Annie's Bookshelf",
   "keywords": [
     "telegram",
     "book",
@@ -35,7 +35,7 @@
     },
     "START_MESSAGE": {
       "description": "Optional: start message of bot, use HTML parsemode format",
-      "value": "Hello {first}. I am book sharing bot which will help you get the books which are agreed to read by people in anime discussion 2.0."
+      "value": "Hello {first}. I am Annie's Bookshelf which will help you get the books which are agreed to read by people in Annie's Bookshelf."
     },
     "ADMINS": {
       "description": "A space separated list of user_ids of Admins, they can only create links",

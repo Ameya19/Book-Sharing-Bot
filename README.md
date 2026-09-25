@@ -1,6 +1,6 @@
-# Book Sharing Bot
+# Annie's Bookshelf
 
-A Telegram bot to share and access books from Anime Discussion 2.0.
+A Telegram bot to share and access books from Annie's Bookshelf.
 
 ## Features
 

@@ -13,7 +13,7 @@ async def cb_handler(client: Bot, query: CallbackQuery):
     data = query.data
     if data == "about":
         await query.message.edit_text(
-            text = f"<b>Book Sharing Bot\n\nA bot to share and access books from Anime Discussion 2.0.\n\nLanguage : <code>Python3</code>\nLibrary : <a href='https://docs.pyrogram.org/'>Pyrogram asyncio {__version__}</a></b>",
+            text = f"<b>Annie's Bookshelf\n\nA bot to share and access books from Annie's Bookshelf.\n\nLanguage : <code>Python3</code>\nLibrary : <a href='https://docs.pyrogram.org/'>Pyrogram asyncio {__version__}</a></b>",
             disable_web_page_preview = True,
             reply_markup = InlineKeyboardMarkup(
                 [

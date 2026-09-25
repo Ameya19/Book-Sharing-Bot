@@ -35,7 +35,7 @@ TG_BOT_WORKERS = int(os.environ.get("TG_BOT_WORKERS", "4"))
 
 #start message
 START_PIC = os.environ.get("START_PIC","")
-START_MSG = os.environ.get("START_MESSAGE", "Hello {first}. I am book sharing bot which will help you get the books which are agreed to read by people in anime discussion 2.0.")
+START_MSG = os.environ.get("START_MESSAGE", "Hello {first}. I am Annie's Bookshelf which will help you get the books which are agreed to read by people in Annie's Bookshelf.")
 
 ADMINS = []
 try:
@@ -67,11 +67,11 @@ AUTO_DEL_SUCCESS_MSG = os.environ.get("AUTO_DEL_SUCCESS_MSG", "Your file has bee
 DISABLE_CHANNEL_BUTTON = os.environ.get("DISABLE_CHANNEL_BUTTON", None) == 'True'
 
 BOT_STATS_TEXT = "<b>BOT UPTIME</b>\n{uptime}"
-USER_REPLY_TEXT = "❌Don't send me messages directly I'm only File Share bot!"
+USER_REPLY_TEXT = "❌Don't send me messages directly I'm only Annie's Bookshelf!"
 
 ADMINS.append(OWNER_ID)
 
-LOG_FILE_NAME = "filesharingbot.txt"
+LOG_FILE_NAME = "anniesbookshelf.txt"
 
 logging.basicConfig(
     level=logging.INFO,

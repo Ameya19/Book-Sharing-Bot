@@ -1,4 +1,4 @@
-# Contributing to Book Sharing Bot
+# Contributing to Annie's Bookshelf
 
 We love your input! We want to make contributing to this project as easy and transparent as possible, whether it's:
 

@@ -29,7 +29,7 @@ async def startup():
 
 @app.get("/")
 async def root():
-    return JSONResponse({"status": "Book Sharing Bot is running"})
+    return JSONResponse({"status": "Annie's Bookshelf is running"})
 
 @app.post("/webhook")
 async def webhook(request: Request):

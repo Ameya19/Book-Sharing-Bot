@@ -42,8 +42,8 @@ JOIN_REQUEST_ENABLE = os.environ.get("JOIN_REQUEST_ENABLED", "").lower() == "tru
 START_PIC = os.environ.get("START_PIC", "")
 START_MSG = os.environ.get(
     "START_MESSAGE",
-    "Hello {first}. I am book sharing bot which will help you get the books "
-    "which are agreed to read by people in anime discussion 2.0."
+    "Hello {first}. I am Annie's Bookshelf which will help you get the books "
+    "which are agreed to read by people in Annie's Bookshelf."
 )
 FORCE_MSG = os.environ.get(
     "FORCE_SUB_MESSAGE",
@@ -65,7 +65,7 @@ AUTO_DEL_SUCCESS_MSG = os.environ.get(
 DISABLE_CHANNEL_BUTTON = os.environ.get("DISABLE_CHANNEL_BUTTON", "False").lower() == "true"
 USER_REPLY_TEXT = os.environ.get(
     "USER_REPLY_TEXT",
-    "❌Don't send me messages directly I'm only File Share bot!"
+    "❌Don't send me messages directly I'm only Annie's Bookshelf!"
 )
 BOT_STATS_TEXT = "<b>BOT UPTIME</b>\n{uptime}"
 
@@ -622,10 +622,10 @@ def handle_start(message, argument=None):
 
 
 def handle_help(message):
-    text = """<b>Book Sharing Bot - Help</b>
+    text = """<b>Annie's Bookshelf - Help</b>
 
 <b>What is this bot?</b>
-This bot helps you access books that are agreed to read by people in Anime Discussion 2.0.
+This bot helps you access books that are agreed to read by people in Annie's Bookshelf.
 
 <b>How to use?</b>
 1. Click on <b>/files</b> to see all available books
@@ -963,8 +963,8 @@ def handle_callback(query):
         edit_message(
             chat_id,
             message_id,
-            "<b>Book Sharing Bot\n\n"
-            "A bot to share and access books from Anime Discussion 2.0.\n\n"
+            "<b>Annie's Bookshelf\n\n"
+            "A bot to share and access books from Annie's Bookshelf.\n\n"
             "Language : <code>Python3</code>\n"
             "Library : <code>Flask + Telegram Bot API</code></b>",
             reply_markup=about_markup()
@@ -1299,7 +1299,7 @@ def initialize():
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
-        "status": "Book Sharing Bot is running",
+        "status": "Annie's Bookshelf is running",
         "bot": BOT_USERNAME,
         "webhook": bool(WEBHOOK_URL),
         "indexed_files": len(file_index),
