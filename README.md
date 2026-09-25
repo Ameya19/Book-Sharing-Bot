@@ -1,106 +1,108 @@
-# Annie's Bookshelf
+# Annie's Bookshelf — Flask Webhook Bot
 
-A Telegram bot to share and access books from Annie's Bookshelf.
-
-## Features
-
-- List all available books with download links
-- Search books by name
-- Generate shareable links for single or multiple books
-- Admin management system (add/remove admins)
-- Broadcast messages to all users
-- Force subscription to channel
-- Auto-delete files after configurable time
-- Deployable on Vercel, Railway, Render, or VPS
+Telegram book-sharing bot using **Flask + Telegram Bot API webhooks**. It is designed to run as a Render Web Service (including the free tier).
 
 ## Commands
 
-### User Commands
+### User commands
 
 | Command | Description |
 |---|---|
-| `/start` | Start the bot or download a book via link |
-| `/files` | List all available books |
-| `/help` | Show help message |
+| `/start` | Start the bot or open a book from a generated deep link |
+| `/files` | List files currently present in the bot's file index |
+| `/help` | Show available commands |
 | `/ping` | Check bot response time |
 
-### Admin Commands
+### Admin commands
 
 | Command | Description |
 |---|---|
-| `/users` | Show total number of bot users |
-| `/broadcast` | Send a message to all users |
-| `/batch` | Generate a link for multiple books |
-| `/genlink` | Generate a link for a single book |
-| `/addadmin` | Add a new admin |
-| `/removeadmin` | Remove an admin |
-| `/listadmins` | List all admins |
+| `/users` | Show total bot users |
+| `/broadcast` | Broadcast a replied message to users |
+| `/batch` | Generate a deep link for a range of channel posts |
+| `/genlink` | Generate a deep link for a channel post |
+| `/addadmin` | Add an admin by ID, username, or reply |
+| `/removeadmin` | Remove an admin by ID, username, or reply |
+| `/listadmins` | List admins |
+| `/stats` | Show bot uptime |
+| `/rename` | Rename an indexed DB-channel document |
 
-## Environment Variables
+## Important `/files` behavior
+
+Telegram's standard Bot API does **not** provide a method for reading arbitrary historical channel messages. Therefore `/files` is populated from:
+
+1. New `channel_post` updates received after the webhook is active.
+2. Files uploaded to the bot by an admin.
+3. Existing channel documents that an admin forwards to the bot while using `/genlink` or `/batch`.
+
+This means an old channel can be backfilled by forwarding its book posts to the bot. The file index is stored locally in `files_index.json`; Render's free filesystem is ephemeral, so the index can be lost after a restart/redeploy. Use a persistent database if you need the `/files` catalog to survive restarts.
+
+## Important `/rename` behavior
+
+Use `/rename` from a private admin chat:
+
+1. Forward the document from the DB channel to the bot.
+2. Reply to that forwarded document with `/rename New Book Name.pdf`.
+3. The bot downloads the document, uploads it to the DB channel with the new filename, updates `/files`, adds a new deep link, and removes the old DB-channel post.
+
+The public Telegram Bot API currently limits `getFile` downloads to **20 MB**, so this Flask implementation can rename documents up to 20 MB. Larger files require a different Telegram API setup (for example, a local Bot API server or an MTProto client).
+
+## Environment variables
 
 | Variable | Required | Description |
 |---|---|---|
-| `TG_BOT_TOKEN` | Yes | Bot token from @BotFather |
-| `APP_ID` | Yes | API ID from my.telegram.org |
-| `API_HASH` | Yes | API Hash from my.telegram.org |
-| `CHANNEL_ID` | Yes | Database channel ID (e.g., -100xxxxxxxxxx) |
-| `OWNER_ID` | Yes | Your Telegram user ID |
-| `ADMINS` | No | Space-separated list of admin user IDs |
-| `FORCE_SUB_CHANNEL` | No | Channel ID for force subscription (0 to disable) |
+| `TG_BOT_TOKEN` | Yes | Token from BotFather |
+| `CHANNEL_ID` | Yes | DB channel ID, e.g. `-1001234567890` |
+| `OWNER_ID` | Yes | Telegram user ID of the bot owner |
+| `ADMINS` | No | Space-separated admin user IDs |
+| `FORCE_SUB_CHANNEL` | No | Channel ID for force subscription; `0` disables it |
 | `START_MESSAGE` | No | Custom start message |
-| `START_PIC` | No | URL of image for start message |
-| `FORCE_SUB_MESSAGE` | No | Custom force sub message |
-| `CUSTOM_CAPTION` | No | Custom caption for files |
-| `PROTECT_CONTENT` | No | Set to `True` to prevent forwarding |
-| `AUTO_DELETE_TIME` | No | Auto-delete time in seconds (0 to disable) |
-| `DISABLE_CHANNEL_BUTTON` | No | Set to `True` to disable channel button |
-| `WEBHOOK_URL` | No | Your Vercel app URL (for Vercel deployment) |
+| `START_PIC` | No | Reserved start image setting |
+| `FORCE_SUB_MESSAGE` | No | Custom force-subscription message |
+| `CUSTOM_CAPTION` | No | Caption template for delivered documents |
+| `PROTECT_CONTENT` | No | `True` prevents forwarding/saving where supported |
+| `AUTO_DELETE_TIME` | No | Auto-delete delay in seconds; `0` disables it |
+| `DISABLE_CHANNEL_BUTTON` | No | `True` disables generated share buttons on channel posts |
+| `USER_REPLY_TEXT` | No | Default reply to unsupported direct messages |
+| `WEBHOOK_URL` | Yes on Render | Public service URL, e.g. `https://your-service.onrender.com` |
+| `WEBHOOK_SECRET` | No | Secret token used to validate Telegram webhook requests |
+| `DATA_DIR` | No | Directory for JSON state files; defaults to project directory |
 
-## Deployment
+`APP_ID` and `API_HASH` are **not required** by the Flask/Telegram Bot API version.
 
-### Local / VPS
+## Render deployment
+
+Use a **Web Service** with:
+
+- Build command: `pip install -r requirements.txt`
+- Start command: `gunicorn --workers 1 app:app`
+
+Set `WEBHOOK_URL` to the Render service URL, without a trailing `/`.
+
+The app also exposes:
+
+- `/health` — health check
+- `/setwebhook` — registers the webhook
+- `/getwebhook` — shows Telegram webhook status
+- `/deletewebhook` — removes the webhook
+
+After deployment, open `/setwebhook` once if the webhook was not automatically registered.
+
+## Telegram channel setup
+
+1. Create the DB channel.
+2. Add the bot as an administrator.
+3. Give it permission to post/edit messages and delete messages if you want `/rename` to replace old posts.
+4. Set `CHANNEL_ID` to the channel ID.
+5. Publish a new document to verify that `/files` receives the `channel_post` update.
+
+## Local run
 
 ```bash
-git clone <your-repo-url>
-cd Book-Sharing-Bot
 pip install -r requirements.txt
-
-# Set environment variables or create .env file
 python main.py
 ```
 
-### Vercel
-
-1. Push code to GitHub
-2. Import repo on [vercel.com](https://vercel.com)
-3. Set environment variables in Vercel dashboard
-4. Deploy
-5. Visit `https://your-app.vercel.app/setwebhook` to register webhook
-
-### Railway
-
-1. Push code to GitHub
-2. Create new project on [railway.app](https://railway.app)
-3. Link your GitHub repo
-4. Set environment variables
-5. Deploy
-
-### Render
-
-1. Push code to GitHub
-2. Create new Web Service on [render.com](https://render.com)
-3. Link your GitHub repo
-4. Set environment variables
-5. Deploy
-
-## Setup
-
-1. Create a Telegram channel
-2. Add the bot as admin with `Post Messages` permission
-3. Get the channel ID from @RawDataBot
-4. Set `CHANNEL_ID` environment variable
-5. (Optional) Create a force sub channel and set `FORCE_SUB_CHANNEL`
-
 ## License
 
-[GNU GPLv3](LICENSE)
+GNU GPLv3 — see `LICENSE`.

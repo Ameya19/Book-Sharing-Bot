@@ -431,6 +431,7 @@ def file_info_from_message(message):
             "chat_id": message.get("chat", {}).get("id"),
             "caption": message.get("caption") or "",
             "file_id": file_id,
+            "file_unique_id": value.get("file_unique_id"),
         }
     return None
 
@@ -492,6 +493,27 @@ def lookup_file_info(message_id):
         if int(item.get("message_id", 0)) == int(message_id):
             return item
     return None
+
+
+def lookup_file_by_identity(document):
+    """Find an indexed channel file from a Telegram document identity."""
+    unique_id = document.get("file_unique_id")
+    file_id = document.get("file_id")
+    for item in file_index:
+        if unique_id and item.get("file_unique_id") == unique_id:
+            return item
+        if file_id and item.get("file_id") == file_id:
+            return item
+    return None
+
+
+def remove_file_index(message_id):
+    with state_lock:
+        file_index[:] = [
+            item for item in file_index
+            if int(item.get("message_id", 0)) != int(message_id)
+        ]
+        save_json(FILES_FILE, file_index)
 
 
 def get_start_ids(argument):
@@ -814,6 +836,17 @@ def process_pending(message):
         )
         return True
 
+    # A forwarded channel post may contain the document metadata. Keep the
+    # file index populated even when the post was published before this
+    # webhook was installed. This is the supported way to backfill /files
+    # because Telegram Bot API cannot read arbitrary channel history.
+    if file_info_from_message(message):
+        add_file_index({
+            **message,
+            "message_id": msg_id,
+            "chat": {"id": CHANNEL_ID},
+        })
+
     if action["type"] == "genlink":
         pending_actions.pop(uid, None)
         payload = encode(f"get-{msg_id * abs(CHANNEL_ID)}")
@@ -1059,153 +1092,180 @@ def process_channel_post(message):
             print(f"Channel markup update failed: {exc}")
 
 def download_telegram_file(file_id):
-    """Download a Telegram file and return its local path."""
+    """Download a Telegram file using the public Bot API.
 
-    # Get Telegram file information
-    response = telegram_request(
-        "getFile",
-        {"file_id": file_id}
+    Telegram's public Bot API currently limits getFile downloads to 20 MB.
+    The caller checks the size and reports a useful error for larger files.
+    """
+    file_data = tg("getFile", {"file_id": file_id})
+    file_path = file_data.get("file_path")
+    if not file_path:
+        raise RuntimeError("Telegram did not return a file path.")
+
+    response = session.get(
+        f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}",
+        stream=True,
+        timeout=120,
     )
+    response.raise_for_status()
 
-    if not response.get("ok"):
-        return None
+    suffix = Path(file_path).suffix
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    try:
+        with temp_file as output:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    output.write(chunk)
+        return temp_file.name
+    except Exception:
+        try:
+            os.remove(temp_file.name)
+        except OSError:
+            pass
+        raise
 
-    file_path = response["result"]["file_path"]
 
-    # Download the actual file
-    url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+def _rename_target_channel_message(reply):
+    """Return the original DB-channel message id for a replied document."""
+    forwarded_id = message_id_from_link_or_forward(reply)
+    if forwarded_id:
+        return forwarded_id
 
-    response = requests.get(url, stream=True)
+    document = reply.get("document") or {}
+    indexed = lookup_file_by_identity(document)
+    if indexed:
+        return int(indexed.get("message_id", 0)) or 0
+    return 0
 
-    if not response.ok:
-        return None
-
-    extension = os.path.splitext(file_path)[1]
-
-    temp_file = tempfile.NamedTemporaryFile(
-        delete=False,
-        suffix=extension
-    )
-
-    with temp_file as f:
-        for chunk in response.iter_content(chunk_size=8192):
-            if chunk:
-                f.write(chunk)
-
-    return temp_file.name
 
 def handle_rename(message, args):
-
     chat_id = message["chat"]["id"]
-    reply = message.get("reply_to_message")
 
-    # Must reply to a message
+    if not is_private(message):
+        return
+    if not is_admin(user_id(message)):
+        send_message(chat_id, "❌ Only admins can use /rename.")
+        return
+
+    reply = message.get("reply_to_message")
     if not reply:
         send_message(
             chat_id,
-            "❌ Reply to a document with:\n\n"
+            "❌ Reply to the DB channel document (forward it to the bot) and use:\n\n"
             "/rename New File Name.pdf"
         )
         return
 
-    # Check if replied message contains a document
     document = reply.get("document")
-
     if not document:
-        send_message(
-            chat_id,
-            "❌ The replied message does not contain a document."
-        )
+        send_message(chat_id, "❌ The replied message does not contain a document.")
         return
 
-    # Get new filename
     new_name = " ".join(args).strip()
-
     if not new_name:
         send_message(
             chat_id,
             "❌ Please provide a new filename.\n\n"
-            "Example:\n"
-            "/rename My New Book.pdf"
+            "Example:\n/rename My New Book.pdf"
         )
         return
 
-    # Prevent invalid filename
     invalid_chars = '<>:"/\\|?*'
-
-    if any(char in new_name for char in invalid_chars):
+    if any(char in new_name for char in invalid_chars) or new_name in (".", ".."):
         send_message(
             chat_id,
-            "❌ Invalid filename.\n"
-            "Please remove characters like: < > : \" / \\ | ? *"
+            "❌ Invalid filename.\nPlease remove characters like: < > : \" / \\ | ? *"
         )
         return
 
-    file_id = document["file_id"]
+    # Telegram's public Bot API cannot download files larger than 20 MB.
+    file_size = document.get("file_size")
+    if file_size and int(file_size) > 20 * 1024 * 1024:
+        send_message(
+            chat_id,
+            "❌ This file is larger than 20 MB. Telegram's public Bot API "
+            "does not allow the bot to download files this large for renaming.\n\n"
+            "Files up to 20 MB can be renamed with this Flask + Bot API version."
+        )
+        return
 
-    send_message(
-        chat_id,
-        "⏳ Downloading and renaming the file..."
-    )
+    old_channel_id = _rename_target_channel_message(reply)
+    if not old_channel_id:
+        send_message(
+            chat_id,
+            "❌ I couldn't identify the original DB channel post.\n\n"
+            "Forward the document directly from the DB channel to this bot, "
+            "then reply to that forwarded document with /rename ..."
+        )
+        return
 
+    wait = send_message(chat_id, "⏳ Downloading and uploading the renamed file...")
     temp_path = None
 
     try:
-        temp_path = download_telegram_file(file_id)
+        temp_path = download_telegram_file(document["file_id"])
+        caption = reply.get("caption") or ""
+        caption_entities = reply.get("caption_entities")
+        upload_data = {
+            "chat_id": CHANNEL_ID,
+            "caption": caption,
+            "protect_content": str(PROTECT_CONTENT).lower(),
+        }
+        if caption_entities:
+            upload_data["caption_entities"] = json.dumps(caption_entities)
 
-        if not temp_path:
-            send_message(
-                chat_id,
-                "❌ Failed to download the file from Telegram."
-            )
-            return
-
-        # Upload with new filename
-        with open(temp_path, "rb") as file:
-
-            response = requests.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument",
-                data={
-                    "chat_id": chat_id,
-                    "caption": reply.get("caption", "")
-                },
-                files={
-                    "document": (
-                        new_name,
-                        file
-                    )
-                }
+        with open(temp_path, "rb") as file_handle:
+            response = session.post(
+                f"{API}/sendDocument",
+                data=upload_data,
+                files={"document": (new_name, file_handle)},
+                timeout=180,
             )
 
         result = response.json()
-
         if not result.get("ok"):
-            send_message(
-                chat_id,
-                f"❌ Failed to upload renamed file.\n\n"
-                f"{result.get('description', 'Unknown error')}"
-            )
-            return
+            raise RuntimeError(result.get("description", "Telegram upload failed."))
 
-        send_message(
+        new_channel_message = result["result"]
+        new_channel_id = int(new_channel_message["message_id"])
+
+        # Replace the old index entry with the new channel message.
+        remove_file_index(old_channel_id)
+        add_file_index(new_channel_message)
+
+        payload = encode(f"get-{new_channel_id * abs(CHANNEL_ID)}")
+        link = bot_link(payload)
+        markup = share_button(link)
+        try:
+            edit_reply_markup(CHANNEL_ID, new_channel_id, markup)
+        except Exception as exc:
+            print(f"Could not add rename share button: {exc}")
+
+        # The renamed file is now the canonical DB-channel copy.
+        delete_message(CHANNEL_ID, old_channel_id)
+
+        edit_message(
             chat_id,
-            f"✅ File renamed successfully!\n\n"
-            f"New name: `{new_name}`"
+            wait["message_id"],
+            f"<b>✅ File renamed successfully.</b>\n\n"
+            f"New name: <code>{escape(new_name)}</code>\n\n"
+            f"<b>New link:</b>\n{link}",
+            reply_markup=markup,
         )
 
-    except Exception as e:
-
-        print("Rename error:", e)
-
-        send_message(
+    except Exception as exc:
+        print(f"Rename error: {exc}")
+        edit_message(
             chat_id,
-            f"❌ Error while renaming file:\n`{str(e)}`"
+            wait["message_id"],
+            f"❌ Rename failed.\n\n<code>{escape(str(exc))}</code>"
         )
-
     finally:
-
         if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 
 # ------------------------- update dispatcher -------------------------
@@ -1257,7 +1317,7 @@ def process_message(message):
         handle_listadmins(message)
     elif command == "/stats" and is_private(message):
         handle_stats(message)
-    elif command == "/rename":
+    elif command == "/rename" and is_private(message):
         return handle_rename(message, args)
     elif is_private(message) and process_pending(message):
         pass
@@ -1282,7 +1342,15 @@ def initialize():
 
     if WEBHOOK_URL:
         try:
-            payload = {"url": f"{WEBHOOK_URL}/webhook"}
+            payload = {
+                "url": f"{WEBHOOK_URL}/webhook",
+                "allowed_updates": [
+                    "message",
+                    "callback_query",
+                    "channel_post",
+                    "edited_channel_post"
+                ]
+            }
             if WEBHOOK_SECRET:
                 payload["secret_token"] = WEBHOOK_SECRET
             result = tg("setWebhook", payload)
@@ -1344,7 +1412,15 @@ def webhook():
 @app.route("/setwebhook", methods=["GET"])
 def set_webhook():
     public_url = WEBHOOK_URL or request.url_root.rstrip("/")
-    payload = {"url": f"{public_url}/webhook"}
+    payload = {
+        "url": f"{public_url}/webhook",
+        "allowed_updates": [
+            "message",
+            "callback_query",
+            "channel_post",
+            "edited_channel_post"
+        ]
+    }
     if WEBHOOK_SECRET:
         payload["secret_token"] = WEBHOOK_SECRET
     try:
