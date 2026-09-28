@@ -69,8 +69,8 @@ PROTECT_CONTENT = os.environ.get("PROTECT_CONTENT", "False").lower() == "true"
 AUTO_DELETE_TIME_DEFAULT = int(os.environ.get("AUTO_DELETE_TIME", "0"))
 AUTO_DELETE_MSG = os.environ.get(
     "AUTO_DELETE_MSG",
-    "This file will be automatically deleted in {time} seconds. "
-    "Please ensure you have saved any necessary content before this time."
+    "⏳ This file will be automatically deleted in <b>{time}</b>.\n"
+    "Please save it before the timer expires."
 )
 AUTO_DEL_SUCCESS_MSG = os.environ.get(
     "AUTO_DEL_SUCCESS_MSG",
@@ -633,27 +633,37 @@ def schedule_auto_deletion(chat_id, message_ids, delay):
 
 
 def process_pending_deletions():
+    """Delete due messages and keep failed deletions queued for retry."""
     now = time.time()
     due = []
+
     with state_lock:
-        remaining = []
-        for item in pending_deletions:
+        for item in list(pending_deletions):
             try:
                 if float(item.get("delete_at", 0)) <= now:
-                    due.append(item)
-                else:
-                    remaining.append(item)
+                    due.append(dict(item))
             except (TypeError, ValueError):
-                # Drop malformed queue entries rather than blocking cleanup.
-                pass
-        pending_deletions[:] = remaining
-        save_pending_deletions()
+                # Remove malformed entries so one bad record cannot block cleanup.
+                pending_deletions.remove(item)
 
     for item in due:
-        try:
-            delete_message(int(item["chat_id"]), int(item["message_id"]))
-        except Exception as exc:
-            print(f"Auto-delete failed for {item}: {exc}")
+        chat_id = int(item["chat_id"])
+        message_id = int(item["message_id"])
+        success = delete_message(chat_id, message_id)
+
+        with state_lock:
+            # Remove only after Telegram confirms success. This prevents a transient
+            # network/API error from permanently losing the deletion task.
+            if success:
+                try:
+                    pending_deletions.remove(item)
+                except ValueError:
+                    pass
+            else:
+                # Retry soon if Telegram was temporarily unavailable.
+                item["delete_at"] = time.time() + 15
+
+    save_pending_deletions()
 
 
 def auto_delete_worker():
@@ -662,7 +672,7 @@ def auto_delete_worker():
             process_pending_deletions()
         except Exception as exc:
             print(f"Auto-delete worker error: {exc}")
-        time.sleep(5)
+        time.sleep(2)
 
 
 def start_auto_delete_worker():
@@ -1572,6 +1582,11 @@ def webhook():
             return jsonify({"ok": False, "error": "invalid secret"}), 403
 
     try:
+        # Webhooks are also a cleanup opportunity. This matters on Render Free:
+        # if the service was asleep when a deletion became due, the next request
+        # immediately processes overdue deletion tasks.
+        process_pending_deletions()
+
         update = request.get_json(silent=True) or {}
 
         if "callback_query" in update:
