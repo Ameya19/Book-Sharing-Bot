@@ -620,16 +620,60 @@ def save_pending_deletions():
         save_json(DELETIONS_FILE, pending_deletions)
 
 
+def _timer_delete_messages(chat_id, message_ids, delete_at):
+    """Delete a delivered file/notice at the requested time.
+
+    The persistent pending-deletions queue remains the recovery mechanism if the
+    process restarts or Telegram is temporarily unavailable.
+    """
+    try:
+        # If the process was delayed, delete immediately; otherwise this runs at
+        # the exact timer deadline (subject to normal OS/thread scheduling).
+        for message_id in message_ids:
+            success = delete_message(chat_id, message_id)
+            if success:
+                with state_lock:
+                    for item in list(pending_deletions):
+                        if (int(item.get("chat_id", 0)) == int(chat_id) and
+                                int(item.get("message_id", 0)) == int(message_id) and
+                                abs(float(item.get("delete_at", 0)) - float(delete_at)) < 1):
+                            try:
+                                pending_deletions.remove(item)
+                            except ValueError:
+                                pass
+        save_pending_deletions()
+    except Exception as exc:
+        print(f"Auto-delete timer error: {exc}")
+
+
 def schedule_auto_deletion(chat_id, message_ids, delay):
+    """Persist deletion jobs and start an in-process timer for immediate cleanup."""
+    delay = max(0, int(delay))
     now = time.time()
+    delete_at = now + delay
+    chat_id = int(chat_id)
+    message_ids = [int(mid) for mid in message_ids if mid]
+
     with state_lock:
         for message_id in message_ids:
             pending_deletions.append({
-                "chat_id": int(chat_id),
-                "message_id": int(message_id),
-                "delete_at": now + int(delay),
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "delete_at": delete_at,
             })
         save_pending_deletions()
+
+    # Do not rely on the background polling worker for normal deletion. A
+    # per-download timer is what makes a 5s/10s/etc. setting actually fire
+    # without requiring another webhook request.
+    if message_ids:
+        timer = threading.Timer(
+            delay,
+            _timer_delete_messages,
+            args=(chat_id, message_ids, delete_at)
+        )
+        timer.daemon = True
+        timer.start()
 
 
 def process_pending_deletions():
