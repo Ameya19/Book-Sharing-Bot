@@ -26,6 +26,8 @@ Telegram book-sharing bot using **Flask + Telegram Bot API webhooks**. It is des
 | `/listadmins` | List admins |
 | `/stats` | Show bot uptime |
 | `/rename` | Rename an indexed DB-channel document |
+| `/autodelete` | Show time to autodelete document |
+| `/setautodelete` | Set time to autodelete document |
 
 ## Important `/files` behavior
 
