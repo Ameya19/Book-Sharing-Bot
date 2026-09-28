@@ -54,7 +54,8 @@ The public Telegram Bot API currently limits `getFile` downloads to **20 MB**, s
 | `TG_BOT_TOKEN` | Yes | Token from BotFather |
 | `CHANNEL_ID` | Yes | DB channel ID, e.g. `-1001234567890` |
 | `OWNER_ID` | Yes | Telegram user ID of the bot owner |
-| `ADMINS` | No | Space-separated admin user IDs |
+| `DEFAULT_ADMINS` | No | Permanent admin user IDs, separated by commas or spaces; restored on every startup/deploy |
+| `ADMINS` | No | Additional admin user IDs, separated by commas or spaces |
 | `FORCE_SUB_CHANNEL` | No | Channel ID for force subscription; `0` disables it |
 | `START_MESSAGE` | No | Custom start message |
 | `START_PIC` | No | Reserved start image setting |
@@ -69,6 +70,25 @@ The public Telegram Bot API currently limits `getFile` downloads to **20 MB**, s
 | `DATA_DIR` | No | Directory for JSON state files; defaults to project directory |
 
 `APP_ID` and `API_HASH` are **not required** by the Flask/Telegram Bot API version.
+
+
+## Permanent default admins
+
+To keep specific admins across Render redeploys without MongoDB, set the `DEFAULT_ADMINS` environment variable. For example:
+
+```text
+DEFAULT_ADMINS=123456789,987654321
+```
+
+You can also use spaces:
+
+```text
+DEFAULT_ADMINS=123456789 987654321
+```
+
+These users are loaded as admins every time the bot starts. `/removeadmin` cannot remove a user from `DEFAULT_ADMINS`; remove their ID from the Render environment variable and redeploy to revoke their default-admin access. The owner (`OWNER_ID`) remains an admin as well.
+
+Runtime admins added with `/addadmin` are still stored in `admins.json`, but on Render Free that local file can be lost on a redeploy.
 
 ## Render deployment
 
@@ -106,3 +126,21 @@ python main.py
 ## License
 
 GNU GPLv3 — see `LICENSE`.
+
+
+## Automatic file deletion
+
+Files delivered to users through a `/start` book link can be automatically deleted from the user's chat after a configurable period. Only the delivered copy is deleted; the original file in the DB channel is not deleted.
+
+Admin commands:
+
+- `/autodelete` - Show the current setting and usage.
+- `/setautodelete 30s` - Delete delivered files after 30 seconds.
+- `/setautodelete 10m` - Delete after 10 minutes.
+- `/setautodelete 2h` - Delete after 2 hours.
+- `/setautodelete 1d` - Delete after 1 day.
+- `/setautodelete 0` - Disable automatic deletion.
+
+The setting and pending deletion queue are stored in the bot's local `DATA_DIR`. The `AUTO_DELETE_TIME` environment variable is used as the initial default when no saved setting exists.
+
+> Render Free uses an ephemeral filesystem. The cleanup worker runs while the web service is running; if the service is asleep, Telegram message deletion can be delayed until the service wakes and receives/handles traffic.

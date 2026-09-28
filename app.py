@@ -27,12 +27,26 @@ if not BOT_TOKEN:
 CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "0"))
 OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
 
-ADMINS = set()
-for value in os.environ.get("ADMINS", "").split():
-    try:
-        ADMINS.add(int(value))
-    except ValueError:
-        pass
+def parse_admin_ids(value):
+    """Parse admin IDs from comma/space/newline separated environment values."""
+    result = set()
+    for item in re.split(r"[\s,]+", value or ""):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            result.add(int(item))
+        except ValueError:
+            pass
+    return result
+
+
+# DEFAULT_ADMINS are always admins and are restored on every startup.
+# They are intentionally kept separate from the runtime /addadmin list so
+# a Render redeploy cannot remove them.
+DEFAULT_ADMINS = parse_admin_ids(os.environ.get("DEFAULT_ADMINS", ""))
+ADMINS = set(DEFAULT_ADMINS)
+ADMINS.update(parse_admin_ids(os.environ.get("ADMINS", "")))
 if OWNER_ID:
     ADMINS.add(OWNER_ID)
 
@@ -52,7 +66,7 @@ FORCE_MSG = os.environ.get(
 )
 CUSTOM_CAPTION = os.environ.get("CUSTOM_CAPTION") or None
 PROTECT_CONTENT = os.environ.get("PROTECT_CONTENT", "False").lower() == "true"
-AUTO_DELETE_TIME = int(os.environ.get("AUTO_DELETE_TIME", "0"))
+AUTO_DELETE_TIME_DEFAULT = int(os.environ.get("AUTO_DELETE_TIME", "0"))
 AUTO_DELETE_MSG = os.environ.get(
     "AUTO_DELETE_MSG",
     "This file will be automatically deleted in {time} seconds. "
@@ -83,6 +97,8 @@ USERS_FILE = DATA_DIR / "users.json"
 USER_PROFILES_FILE = DATA_DIR / "user_profiles.json"
 ADMINS_FILE = DATA_DIR / "admins.json"
 FILES_FILE = DATA_DIR / "files_index.json"
+SETTINGS_FILE = DATA_DIR / "bot_settings.json"
+DELETIONS_FILE = DATA_DIR / "pending_deletions.json"
 
 state_lock = threading.RLock()
 pending_actions = {}  # user_id -> {"type": "genlink"|"batch", "step": 1|2}
@@ -119,6 +135,19 @@ ADMINS.update(stored_admins)
 # File index contains channel messages seen since this Flask webhook was installed.
 # Telegram Bot API does not provide a "read channel history" method.
 file_index = load_json(FILES_FILE, [])
+
+# Runtime-configurable settings. These are kept in the bot's local data directory so /setautodelete can change the value
+# without requiring a redeploy. Render's filesystem is ephemeral, so an optional
+# AUTO_DELETE_TIME environment variable remains the startup/default value.
+_settings = load_json(SETTINGS_FILE, {})
+try:
+    auto_delete_time = int(_settings.get("auto_delete_time", AUTO_DELETE_TIME_DEFAULT))
+except (TypeError, ValueError):
+    auto_delete_time = AUTO_DELETE_TIME_DEFAULT
+
+pending_deletions = load_json(DELETIONS_FILE, [])
+delete_worker_started = False
+
 
 
 def add_user(user_id, user=None):
@@ -540,6 +569,150 @@ def get_start_ids(argument):
     return []
 
 
+# ------------------------- auto-delete -------------------------
+
+def get_auto_delete_time():
+    with state_lock:
+        return max(0, int(auto_delete_time))
+
+
+def save_auto_delete_time(seconds):
+    global auto_delete_time
+    with state_lock:
+        auto_delete_time = max(0, int(seconds))
+        settings = load_json(SETTINGS_FILE, {})
+        settings["auto_delete_time"] = auto_delete_time
+        save_json(SETTINGS_FILE, settings)
+
+
+def format_duration(seconds):
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds} second{'s' if seconds != 1 else ''}"
+    if seconds % 3600 == 0:
+        hours = seconds // 3600
+        return f"{hours} hour{'s' if hours != 1 else ''}"
+    if seconds % 60 == 0:
+        minutes = seconds // 60
+        return f"{minutes} minute{'s' if minutes != 1 else ''}"
+    return f"{seconds} seconds"
+
+
+def parse_duration(value):
+    """Parse 30s, 10m, 2h, 1d or a plain number of seconds."""
+    value = str(value or "").strip().lower()
+    if value in {"0", "off", "disable", "disabled"}:
+        return 0
+    match = re.fullmatch(r"(\d+)\s*([smhd]?)", value)
+    if not match:
+        raise ValueError("Use formats like 30s, 10m, 2h, 1d, or 0 to disable.")
+    amount = int(match.group(1))
+    unit = match.group(2) or "s"
+    multiplier = {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+    seconds = amount * multiplier
+    if seconds > 30 * 86400:
+        raise ValueError("The maximum auto-delete time is 30 days.")
+    return seconds
+
+
+def save_pending_deletions():
+    with state_lock:
+        save_json(DELETIONS_FILE, pending_deletions)
+
+
+def schedule_auto_deletion(chat_id, message_ids, delay):
+    now = time.time()
+    with state_lock:
+        for message_id in message_ids:
+            pending_deletions.append({
+                "chat_id": int(chat_id),
+                "message_id": int(message_id),
+                "delete_at": now + int(delay),
+            })
+        save_pending_deletions()
+
+
+def process_pending_deletions():
+    now = time.time()
+    due = []
+    with state_lock:
+        remaining = []
+        for item in pending_deletions:
+            try:
+                if float(item.get("delete_at", 0)) <= now:
+                    due.append(item)
+                else:
+                    remaining.append(item)
+            except (TypeError, ValueError):
+                # Drop malformed queue entries rather than blocking cleanup.
+                pass
+        pending_deletions[:] = remaining
+        save_pending_deletions()
+
+    for item in due:
+        try:
+            delete_message(int(item["chat_id"]), int(item["message_id"]))
+        except Exception as exc:
+            print(f"Auto-delete failed for {item}: {exc}")
+
+
+def auto_delete_worker():
+    while True:
+        try:
+            process_pending_deletions()
+        except Exception as exc:
+            print(f"Auto-delete worker error: {exc}")
+        time.sleep(5)
+
+
+def start_auto_delete_worker():
+    global delete_worker_started
+    with state_lock:
+        if delete_worker_started:
+            return
+        delete_worker_started = True
+    threading.Thread(target=auto_delete_worker, name="auto-delete-worker", daemon=True).start()
+
+
+def handle_auto_delete(message, args):
+    if not is_admin(user_id(message)):
+        send_message(message["chat"]["id"], "❌ Only admins can configure auto-delete.")
+        return
+
+    chat_id = message["chat"]["id"]
+    if not args:
+        current = get_auto_delete_time()
+        status = "disabled" if current == 0 else f"{format_duration(current)}"
+        send_message(
+            chat_id,
+            "<b>Auto-delete setting</b>\n\n"
+            f"Current: <code>{escape(status)}</code>\n\n"
+            "Set it with:\n"
+            "<code>/setautodelete 30s</code>\n"
+            "<code>/setautodelete 10m</code>\n"
+            "<code>/setautodelete 2h</code>\n"
+            "<code>/setautodelete 1d</code>\n\n"
+            "Use <code>/setautodelete 0</code> to disable it."
+        )
+        return
+
+    try:
+        seconds = parse_duration(args[0])
+        save_auto_delete_time(seconds)
+    except ValueError as exc:
+        send_message(chat_id, f"❌ {escape(str(exc))}")
+        return
+
+    if seconds == 0:
+        send_message(chat_id, "✅ Auto-delete has been disabled.")
+    else:
+        send_message(
+            chat_id,
+            f"✅ Auto-delete is now set to <b>{escape(format_duration(seconds))}</b>.\n\n"
+            "Files delivered through book links will be deleted automatically after this time."
+        )
+
+
 # ------------------------- command handlers -------------------------
 
 def handle_start(message, argument=None):
@@ -594,27 +767,26 @@ def handle_start(message, argument=None):
 
         delete_message(message["chat"]["id"], temp["message_id"])
 
-        if AUTO_DELETE_TIME > 0 and copied:
+        if get_auto_delete_time() > 0 and copied:
+            delay = get_auto_delete_time()
+            user_chat_id = message["chat"]["id"]
+
+            # Tell the user exactly what will happen. The notification is also
+            # scheduled for deletion, so no leftover auto-delete message remains.
             notice = send_message(
-                message["chat"]["id"],
-                AUTO_DELETE_MSG.format(time=AUTO_DELETE_TIME)
+                user_chat_id,
+                AUTO_DELETE_MSG.format(time=format_duration(delay))
             )
 
-            def delete_later(chat_id, ids_to_delete, notice_id):
-                time.sleep(AUTO_DELETE_TIME)
-                for mid in ids_to_delete:
-                    delete_message(chat_id, mid)
-                edit_message(
-                    chat_id,
-                    notice_id,
-                    AUTO_DEL_SUCCESS_MSG
-                )
+            messages_to_delete = list(copied)
+            if notice and notice.get("message_id"):
+                messages_to_delete.append(notice["message_id"])
 
-            threading.Thread(
-                target=delete_later,
-                args=(message["chat"]["id"], copied, notice["message_id"]),
-                daemon=True
-            ).start()
+            schedule_auto_deletion(
+                user_chat_id,
+                messages_to_delete,
+                delay
+            )
         return
 
     markup = {
@@ -659,6 +831,8 @@ This bot helps you access books that are agreed to read by people in Annie's Boo
 /files - List all available books
 /ping - Check bot response time
 /help - Show this help message
+/setautodelete - Configure automatic file deletion (admins)
+/autodelete - Show/configure automatic file deletion (admins)
 
 <b>Need help?</b>
 Contact the bot owner for support."""
@@ -949,6 +1123,14 @@ def handle_removeadmin(message, args):
         return
     if remove_id not in ADMINS:
         send_message(message["chat"]["id"], "This user is not an admin.")
+        return
+
+    if remove_id in DEFAULT_ADMINS:
+        send_message(
+            message["chat"]["id"],
+            "This is a default admin configured in <code>DEFAULT_ADMINS</code> and cannot be removed with /removeadmin. "
+            "Remove the ID from the Render environment variable if you want to revoke access."
+        )
         return
 
     ADMINS.discard(remove_id)
@@ -1317,6 +1499,8 @@ def process_message(message):
         handle_listadmins(message)
     elif command == "/stats" and is_private(message):
         handle_stats(message)
+    elif command in ("/setautodelete", "/autodelete") and is_private(message):
+        handle_auto_delete(message, args)
     elif command == "/rename" and is_private(message):
         return handle_rename(message, args)
     elif is_private(message) and process_pending(message):
@@ -1330,6 +1514,7 @@ def process_message(message):
 def initialize():
     global BOT_ME, BOT_USERNAME, CHANNEL_USERNAME
 
+    start_auto_delete_worker()
     BOT_ME = tg_get("getMe")
     BOT_USERNAME = BOT_ME.get("username")
 
