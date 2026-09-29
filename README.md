@@ -146,3 +146,7 @@ Admin commands:
 The setting and pending deletion queue are stored in the bot's local `DATA_DIR`. The `AUTO_DELETE_TIME` environment variable is used as the initial default when no saved setting exists.
 
 > Render Free uses an ephemeral filesystem. The cleanup worker runs while the web service is running; if the service is asleep, Telegram message deletion can be delayed until the service wakes and receives/handles traffic.
+
+
+## Book link file types
+Only `.pdf` and `.epub` files are supported for generated download links. Other media/files are rejected by `/genlink`, `/batch`, admin uploads, and are not shown in `/files`.

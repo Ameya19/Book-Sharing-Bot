@@ -438,6 +438,19 @@ def subscribed(user_id_value):
         return False
 
 
+SUPPORTED_BOOK_EXTENSIONS = {".pdf", ".epub"}
+
+def is_supported_book_name(file_name):
+    """Return True only for PDF and EPUB files."""
+    name = (file_name or "").strip().lower()
+    return Path(name).suffix in SUPPORTED_BOOK_EXTENSIONS
+
+def is_supported_book_info(info):
+    return bool(info and is_supported_book_name(info.get("file_name")))
+
+def unsupported_book_message():
+    return "❌ Only <b>PDF</b> and <b>EPUB</b> files are supported for book links."
+
 def file_info_from_message(message):
     for kind in ("document", "video", "audio", "photo"):
         if kind not in message:
@@ -798,6 +811,9 @@ def handle_start(message, argument=None):
 
         for msg_id in ids:
             info = lookup_file_info(msg_id)
+            if not is_supported_book_info(info):
+                print(f"Skipping unsupported/non-indexed book message {msg_id}")
+                continue
             caption = None
             if info and CUSTOM_CAPTION and info.get("type") == "document":
                 try:
@@ -907,7 +923,7 @@ def handle_ping(message):
 
 def build_files_page(page):
     per_page = 10
-    snapshot = list(file_index)
+    snapshot = [item for item in file_index if is_supported_book_name(item.get("file_name"))]
     total_pages = max(1, (len(snapshot) + per_page - 1) // per_page)
     page = max(1, min(page, total_pages))
     selected = snapshot[(page - 1) * per_page:page * per_page]
@@ -938,12 +954,12 @@ def build_files_page(page):
 
 
 def handle_files(message):
-    if not file_index:
+    supported_files = [item for item in file_index if is_supported_book_name(item.get("file_name"))]
+    if not supported_files:
         send_message(
             message["chat"]["id"],
-            "No files are indexed yet.\n\n"
-            "New channel posts will appear here after the webhook is active. "
-            "You can still use /genlink with an existing channel post."
+            "No PDF or EPUB files are indexed yet.\n\n"
+            "Only PDF and EPUB books can generate download links."
         )
         return
 
@@ -1062,6 +1078,17 @@ def process_pending(message):
             message["chat"]["id"],
             "❌ Error\n\nThis message/link is not from my DB Channel."
         )
+        return True
+
+    # Link generation is restricted to PDF and EPUB books. Prefer the
+    # forwarded message metadata, otherwise use the persistent file index.
+    incoming_info = file_info_from_message(message)
+    indexed_info = lookup_file_info(msg_id)
+    book_info = incoming_info if incoming_info else indexed_info
+    if not is_supported_book_info(book_info):
+        send_message(message["chat"]["id"], unsupported_book_message())
+        if action["type"] == "genlink" or action.get("step") == 1:
+            pending_actions.pop(uid, None)
         return True
 
     # A forwarded channel post may contain the document metadata. Keep the
@@ -1262,6 +1289,9 @@ def process_private_media(message):
     info = file_info_from_message(message)
     if not info:
         return False
+    if not is_supported_book_info(info):
+        send_message(message["chat"]["id"], unsupported_book_message())
+        return True
 
     wait = send_message(message["chat"]["id"], "Please Wait...!")
 
@@ -1311,8 +1341,10 @@ def process_channel_post(message):
     # Always index the post. DISABLE_CHANNEL_BUTTON only controls the
     # share button, not whether the file appears in /files.
     info = file_info_from_message(message)
-    if info:
+    if info and is_supported_book_info(info):
         add_file_index(message)
+    else:
+        info = None
 
     if DISABLE_CHANNEL_BUTTON:
         return
