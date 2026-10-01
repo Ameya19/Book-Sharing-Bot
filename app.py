@@ -10,6 +10,7 @@ from pathlib import Path
 import tempfile
 
 import requests
+from pymongo import MongoClient, ASCENDING
 from flask import Flask, request, jsonify
 
 # ============================================================
@@ -101,6 +102,25 @@ SETTINGS_FILE = DATA_DIR / "bot_settings.json"
 DELETIONS_FILE = DATA_DIR / "pending_deletions.json"
 
 state_lock = threading.RLock()
+MONGODB_URI = os.environ.get("MONGODB_URI", "").strip()
+MONGODB_DB_NAME = os.environ.get("MONGODB_DB_NAME", "book_sharing_bot")
+mongo_client = None
+mongo_db = None
+if MONGODB_URI:
+    mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=10000, connectTimeoutMS=10000)
+    mongo_client.admin.command("ping")
+    mongo_db = mongo_client[MONGODB_DB_NAME]
+    mongo_files = mongo_db["files"]
+    mongo_admins = mongo_db["admins"]
+    mongo_settings = mongo_db["settings"]
+    mongo_deletions = mongo_db["pending_deletions"]
+    mongo_users = mongo_db["users"]
+    mongo_profiles = mongo_db["user_profiles"]
+    mongo_files.create_index([("message_id", ASCENDING)], unique=True)
+    mongo_admins.create_index([("user_id", ASCENDING)], unique=True)
+    mongo_deletions.create_index([("job_key", ASCENDING)], unique=True)
+else:
+    mongo_files = mongo_admins = mongo_settings = mongo_deletions = mongo_users = mongo_profiles = None
 pending_actions = {}  # user_id -> {"type": "genlink"|"batch", "step": 1|2}
 
 session = requests.Session()
@@ -127,14 +147,22 @@ def save_json(path, data):
 
 
 users = set(int(x) for x in load_json(USERS_FILE, []) if str(x).lstrip("-").isdigit())
+if mongo_db is not None:
+    users.update(int(x["user_id"]) for x in mongo_users.find({}, {"user_id": 1}) if x.get("user_id") is not None)
 # Maps normalized Telegram usernames to user IDs for users who have interacted with the bot.
 user_profiles = load_json(USER_PROFILES_FILE, {})
+if mongo_db is not None:
+    user_profiles.update({x["username"]: x["profile"] for x in mongo_profiles.find({}) if x.get("username") and x.get("profile")})
 stored_admins = set(int(x) for x in load_json(ADMINS_FILE, []) if str(x).lstrip("-").isdigit())
 ADMINS.update(stored_admins)
+if mongo_db is not None:
+    ADMINS.update(int(x["user_id"]) for x in mongo_admins.find({}) if x.get("user_id") is not None)
 
 # File index contains channel messages seen since this Flask webhook was installed.
 # Telegram Bot API does not provide a "read channel history" method.
 file_index = load_json(FILES_FILE, [])
+if mongo_db is not None:
+    file_index = list(mongo_files.find({}, {"_id": 0}).sort("message_id", ASCENDING))
 
 # Runtime-configurable settings. These are kept in the bot's local data directory so /setautodelete can change the value
 # without requiring a redeploy. Render's filesystem is ephemeral, so an optional
@@ -144,8 +172,16 @@ try:
     auto_delete_time = int(_settings.get("auto_delete_time", AUTO_DELETE_TIME_DEFAULT))
 except (TypeError, ValueError):
     auto_delete_time = AUTO_DELETE_TIME_DEFAULT
+if mongo_db is not None:
+    persisted_setting = mongo_settings.find_one({"_id": "bot_config"}) or {}
+    try:
+        auto_delete_time = max(0, int(persisted_setting.get("auto_delete_time", auto_delete_time)))
+    except (TypeError, ValueError):
+        pass
 
 pending_deletions = load_json(DELETIONS_FILE, [])
+if mongo_db is not None:
+    pending_deletions = [{k: v for k, v in x.items() if k not in {"_id", "job_key"}} for x in mongo_deletions.find({})]
 delete_worker_started = False
 
 
@@ -155,6 +191,8 @@ def add_user(user_id, user=None):
         if user_id not in users:
             users.add(user_id)
             save_json(USERS_FILE, sorted(users))
+            if mongo_db is not None:
+                mongo_users.update_one({"user_id": int(user_id)}, {"$set": {"user_id": int(user_id)}}, upsert=True)
 
         if user:
             username = (user.get("username") or "").strip().lstrip("@").lower()
@@ -166,6 +204,8 @@ def add_user(user_id, user=None):
                     "last_name": user.get("last_name", "")
                 }
                 save_json(USER_PROFILES_FILE, user_profiles)
+                if mongo_db is not None:
+                    mongo_profiles.update_one({"username": username}, {"$set": {"profile": user_profiles[username]}}, upsert=True)
 
 
 def resolve_user_id(identifier, message=None):
@@ -208,10 +248,17 @@ def remove_user(user_id):
     with state_lock:
         users.discard(user_id)
         save_json(USERS_FILE, sorted(users))
+        if mongo_db is not None:
+            mongo_users.delete_one({"user_id": int(user_id)})
 
 
 def persist_admins():
-    save_json(ADMINS_FILE, sorted(x for x in ADMINS if x != OWNER_ID))
+    save_json(ADMINS_FILE, sorted(x for x in ADMINS if x != OWNER_ID and x not in DEFAULT_ADMINS))
+    if mongo_db is not None:
+        mongo_admins.delete_many({})
+        runtime_ids = [x for x in ADMINS if x != OWNER_ID and x not in DEFAULT_ADMINS]
+        if runtime_ids:
+            mongo_admins.insert_many([{"user_id": int(x)} for x in runtime_ids])
 
 
 # ------------------------- Telegram API -------------------------
@@ -498,6 +545,9 @@ def add_file_index(message):
         existing.append(info)
         file_index[:] = existing[-5000:]
         save_json(FILES_FILE, file_index)
+        if mongo_db is not None:
+            mongo_files.replace_one({"message_id": int(info["message_id"])}, info, upsert=True)
+            mongo_files.delete_many({"message_id": {"$nin": [int(x["message_id"]) for x in file_index]}})
 
 
 def message_id_from_link_or_forward(message):
@@ -556,6 +606,8 @@ def remove_file_index(message_id):
             if int(item.get("message_id", 0)) != int(message_id)
         ]
         save_json(FILES_FILE, file_index)
+        if mongo_db is not None:
+            mongo_files.delete_one({"message_id": int(message_id)})
 
 
 def get_start_ids(argument):
@@ -596,6 +648,8 @@ def save_auto_delete_time(seconds):
         settings = load_json(SETTINGS_FILE, {})
         settings["auto_delete_time"] = auto_delete_time
         save_json(SETTINGS_FILE, settings)
+        if mongo_db is not None:
+            mongo_settings.update_one({"_id": "bot_config"}, {"$set": {"auto_delete_time": auto_delete_time}}, upsert=True)
 
 
 def format_duration(seconds):
