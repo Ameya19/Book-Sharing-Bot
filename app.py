@@ -1353,16 +1353,56 @@ def handle_removeadmin(message, args):
 
 
 def handle_listadmins(message):
+    """Show admins with display names, role/source, and Telegram IDs."""
     if not is_admin(user_id(message)):
         return
-    admin_ids = sorted(ADMINS)
+
+    admin_ids = sorted(ADMINS, key=lambda value: (value != OWNER_ID, value))
     if not admin_ids:
-        send_message(message["chat"]["id"], "No admins found.")
+        send_message(message["chat"]["id"], "<b>Admin Management</b>\n\nNo admins are configured.")
         return
-    text = "<b>Admin List:</b>\n\n" + "\n".join(
-        f"<code>{x}</code>" for x in admin_ids
-    )
-    send_message(message["chat"]["id"], text)
+
+    # Build an ID -> profile lookup from usernames seen by the bot.
+    profiles_by_id = {}
+    for profile in user_profiles.values():
+        try:
+            profile_id = int(profile.get("id"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        profiles_by_id[profile_id] = profile
+
+    lines = [
+        "<b>👥 Admin Management</b>",
+        f"<b>Total admins:</b> {len(admin_ids)}",
+        "",
+    ]
+
+    for number, admin_id in enumerate(admin_ids, start=1):
+        profile = profiles_by_id.get(admin_id, {})
+        full_name = " ".join(
+            part for part in (profile.get("first_name", ""), profile.get("last_name", "")) if part
+        ).strip()
+        username = profile.get("username")
+        display_name = full_name or (f"@{username}" if username else "Telegram user")
+        if username and full_name:
+            display_name += f" (@{username})"
+
+        if admin_id == OWNER_ID and OWNER_ID:
+            role = "👑 Owner"
+        elif admin_id in DEFAULT_ADMINS:
+            role = "🛡 Default admin"
+        else:
+            role = "✅ Admin"
+
+        lines.extend([
+            f"<b>{number}. {escape(display_name)}</b>",
+            f"   {role}",
+            f"   ID: <code>{admin_id}</code>",
+            "",
+        ])
+
+    lines.append("<i>Use /addadmin and /removeadmin to manage access.</i>")
+    send_message(message["chat"]["id"], "\n".join(lines), disable_preview=True)
 
 
 def handle_stats(message):
