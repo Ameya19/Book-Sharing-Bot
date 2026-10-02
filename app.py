@@ -957,6 +957,7 @@ This bot helps you access books that are agreed to read by people in Annie's Boo
 /help - Show this help message
 /setautodelete - Configure automatic file deletion (admins)
 /autodelete - Show/configure automatic file deletion (admins)
+/removebook - Remove a deleted/retired book from the index (admins)
 
 <b>Need help?</b>
 Contact the bot owner for support."""
@@ -1005,6 +1006,57 @@ def build_files_page(page):
     buttons.append([{"text": "Close", "callback_data": "close"}])
 
     return text, {"inline_keyboard": buttons}
+
+
+def parse_channel_message_id(value):
+    """Accept a bare channel post ID or a Telegram channel post URL."""
+    value = (value or "").strip()
+    if value.isdigit():
+        return int(value)
+
+    match = re.fullmatch(r"https?://t\.me/(?:c/)?([^/]+)/([0-9]+)(?:\?.*)?", value)
+    if not match:
+        return None
+
+    channel_part, message_part = match.groups()
+    if channel_part.isdigit():
+        # Private channel links use /c/<internal-id>/<message-id>.
+        if str(CHANNEL_ID) != f"-100{channel_part}":
+            return None
+    elif CHANNEL_USERNAME and channel_part.lower() != CHANNEL_USERNAME.lower():
+        return None
+    return int(message_part)
+
+
+def handle_removebook(message, args):
+    """Remove one book from the searchable index without deleting channel content."""
+    if not is_admin(user_id(message)):
+        return
+
+    if not args:
+        send_message(
+            message["chat"]["id"],
+            "Usage: <code>/removebook &lt;message_id or channel_post_link&gt;</code>\n"
+            "Example: <code>/removebook 1234</code>\n"
+            "This removes only the bot's index entry; it does not delete a channel post."
+        )
+        return
+
+    msg_id = parse_channel_message_id(args[0])
+    if not msg_id:
+        send_message(message["chat"]["id"], "❌ Provide a valid post ID or link from the configured book channel.")
+        return
+
+    existed = lookup_file_info(msg_id) is not None
+    remove_file_index(msg_id)
+    if existed:
+        send_message(
+            message["chat"]["id"],
+            f"✅ Removed channel post <code>{msg_id}</code> from the /files index.\n"
+            "The original channel post was not changed."
+        )
+    else:
+        send_message(message["chat"]["id"], f"ℹ️ Post <code>{msg_id}</code> was not present in the index.")
 
 
 def handle_files(message):
@@ -1643,6 +1695,8 @@ def process_message(message):
         handle_auto_delete(message, args)
     elif command == "/rename" and is_private(message):
         return handle_rename(message, args)
+    elif command == "/removebook" and is_private(message):
+        handle_removebook(message, args)
     elif is_private(message) and process_pending(message):
         pass
     elif is_private(message) and not command and USER_REPLY_TEXT:
