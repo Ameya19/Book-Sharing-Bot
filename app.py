@@ -610,6 +610,31 @@ def remove_file_index(message_id):
             mongo_files.delete_one({"message_id": int(message_id)})
 
 
+def replace_file_index(old_message_id, new_message):
+    """Atomically replace a renamed channel post in local and Mongo indexes."""
+    info = file_info_from_message(new_message)
+    if not info or not info.get("message_id") or not is_supported_book_info(info):
+        raise ValueError("The renamed channel post is not a supported PDF or EPUB document.")
+
+    old_id = int(old_message_id)
+    new_id = int(info["message_id"])
+    with state_lock:
+        updated = [
+            item for item in file_index
+            if int(item.get("message_id", 0)) not in {old_id, new_id}
+        ]
+        updated.append(info)
+        updated = updated[-5000:]
+
+        # Persist the new canonical entry before publishing the in-memory state.
+        if mongo_db is not None:
+            mongo_files.replace_one({"message_id": new_id}, info, upsert=True)
+            if old_id != new_id:
+                mongo_files.delete_one({"message_id": old_id})
+        save_json(FILES_FILE, updated)
+        file_index[:] = updated
+
+
 def get_start_ids(argument):
     decoded = decode(argument)
     pieces = decoded.split("-")
@@ -1544,6 +1569,13 @@ def handle_rename(message, args):
         )
         return
 
+    old_name = (document.get("file_name") or "").strip()
+    if not Path(new_name).suffix and Path(old_name).suffix:
+        new_name += Path(old_name).suffix
+    if not is_supported_book_name(new_name):
+        send_message(chat_id, "❌ The new filename must end with .pdf or .epub.")
+        return
+
     invalid_chars = '<>:"/\\|?*'
     if any(char in new_name for char in invalid_chars) or new_name in (".", ".."):
         send_message(
@@ -1603,9 +1635,10 @@ def handle_rename(message, args):
         new_channel_message = result["result"]
         new_channel_id = int(new_channel_message["message_id"])
 
-        # Replace the old index entry with the new channel message.
-        remove_file_index(old_channel_id)
-        add_file_index(new_channel_message)
+        # Replace the old index entry with the renamed channel post in both
+        # MongoDB and the local cache. The new Telegram message ID and filename
+        # become the canonical catalog entry.
+        replace_file_index(old_channel_id, new_channel_message)
 
         payload = encode(f"get-{new_channel_id * abs(CHANNEL_ID)}")
         link = bot_link(payload)
