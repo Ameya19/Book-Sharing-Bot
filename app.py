@@ -1001,36 +1001,63 @@ def handle_ping(message):
     )
 
 
+def _display_book_title(filename):
+    """Create a readable display title without changing the stored filename."""
+    name = Path(str(filename or "Unnamed book")).name
+    stem = Path(name).stem
+    # Telegram-uploaded filenames often contain underscore separators and
+    # repeated metadata fragments. Normalize whitespace for a cleaner catalog.
+    stem = re.sub(r"[_\s]+", " ", stem)
+    stem = re.sub(r"\s+", " ", stem).strip(" .-_")
+    return stem or "Untitled book"
+
+
+def _short_button_title(title, limit=42):
+    title = re.sub(r"\s+", " ", title).strip()
+    return title if len(title) <= limit else title[:limit - 1].rstrip() + "…"
+
+
 def build_files_page(page):
-    per_page = 10
+    per_page = 8
     snapshot = [item for item in file_index if is_supported_book_name(item.get("file_name"))]
-    total_pages = max(1, (len(snapshot) + per_page - 1) // per_page)
+    total_files = len(snapshot)
+    total_pages = max(1, (total_files + per_page - 1) // per_page)
     page = max(1, min(page, total_pages))
     selected = snapshot[(page - 1) * per_page:page * per_page]
 
-    text = f"<b>Available Files (Page {page}/{total_pages})</b>\n\n"
+    first_item = (page - 1) * per_page + 1 if total_files else 0
+    last_item = min(page * per_page, total_files)
+    text = (
+        f"<b>📚 Available Books</b>\n"
+        f"<i>{first_item}–{last_item} of {total_files} • Page {page}/{total_pages}</i>\n\n"
+    )
     buttons = []
 
-    for number, item in enumerate(selected, start=(page - 1) * per_page + 1):
+    for number, item in enumerate(selected, start=first_item):
         msg_id = item["message_id"]
         converted = msg_id * abs(CHANNEL_ID)
         payload = encode(f"get-{converted}")
         link = bot_link(payload)
-        name = item.get("file_name") or "Unnamed file"
+        filename = item.get("file_name") or "Unnamed book"
+        title = _display_book_title(filename)
+        extension = Path(filename).suffix.lower().lstrip(".").upper() or "BOOK"
         size = format_size(item.get("file_size"))
-        text += f"<b>{number}.</b> <code>{escape(name)}</code> ({size})\n"
-        buttons.append([{"text": f"{number}. {name}", "url": link}])
+        text += (
+            f"<b>{number}. {escape(title)}</b>\n"
+            f"<small>📄 {extension}  •  {escape(str(size))}</small>\n\n"
+        )
+        buttons.append([{"text": f"⬇️ {number}. {_short_button_title(title)}", "url": link}])
 
     nav = []
     if page > 1:
-        nav.append({"text": "Previous", "callback_data": f"files_page_{page - 1}"})
+        nav.append({"text": "‹ Previous", "callback_data": f"files_page_{page - 1}"})
     if page < total_pages:
-        nav.append({"text": "Next", "callback_data": f"files_page_{page + 1}"})
+        nav.append({"text": "Next ›", "callback_data": f"files_page_{page + 1}"})
     if nav:
         buttons.append(nav)
-    buttons.append([{"text": "Close", "callback_data": "close"}])
+    buttons.append([{"text": "✕ Close", "callback_data": "close"}])
 
-    return text, {"inline_keyboard": buttons}
+    return text.rstrip(), {"inline_keyboard": buttons}
 
 
 def parse_channel_message_id(value):
