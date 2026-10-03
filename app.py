@@ -1044,7 +1044,7 @@ def build_files_page(page):
         size = format_size(item.get("file_size"))
         text += (
             f"<b>{number}. {escape(title)}</b>\n"
-            f"<small>📄 {extension}  •  {escape(str(size))}</small>\n\n"
+            f"<i>📄 {extension}  •  {escape(str(size))}</i>\n\n"
         )
         buttons.append([{"text": f"⬇️ {number}. {_short_button_title(title)}", "url": link}])
 
