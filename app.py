@@ -1362,7 +1362,7 @@ def handle_listadmins(message):
         send_message(message["chat"]["id"], "<b>Admin Management</b>\n\nNo admins are configured.")
         return
 
-    # Build an ID -> profile lookup from usernames seen by the bot.
+    # Start with profiles previously observed when users interacted with the bot.
     profiles_by_id = {}
     for profile in user_profiles.values():
         try:
@@ -1370,6 +1370,21 @@ def handle_listadmins(message):
         except (TypeError, ValueError, AttributeError):
             continue
         profiles_by_id[profile_id] = profile
+
+    # Ask Telegram for each account profile by numeric ID. This works when the
+    # Bot API can resolve that private chat; otherwise retain a clear ID-based fallback.
+    for admin_id in admin_ids:
+        try:
+            chat = tg_get("getChat", {"chat_id": admin_id})
+            if chat and chat.get("type") == "private":
+                profiles_by_id[admin_id] = {
+                    "id": admin_id,
+                    "first_name": chat.get("first_name", ""),
+                    "last_name": chat.get("last_name", ""),
+                    "username": chat.get("username", ""),
+                }
+        except Exception:
+            pass
 
     lines = [
         "<b>👥 Admin Management</b>",
@@ -1383,7 +1398,7 @@ def handle_listadmins(message):
             part for part in (profile.get("first_name", ""), profile.get("last_name", "")) if part
         ).strip()
         username = profile.get("username")
-        display_name = full_name or (f"@{username}" if username else "Telegram user")
+        display_name = full_name or (f"@{username}" if username else f"Account ID {admin_id} (name unavailable)")
         if username and full_name:
             display_name += f" (@{username})"
 
