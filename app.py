@@ -971,23 +971,68 @@ def handle_help(message):
 This bot helps you access books that are agreed to read by people in Annie's Bookshelf.
 
 <b>How to use?</b>
-1. Click on <b>/files</b> to see all available books
-2. Click on any book name to download it
-3. You can also use shared links to get books directly
+1. Start the bot with <b>/start</b>
+2. Open a book using a shared book link
+3. Use <b>/ping</b> to check whether the bot is responding
 
-<b>Commands:</b>
-/start - Start the bot
-/files - List all available books
+<b>User Commands:</b>
+/start - Start the bot or open a shared book link
 /ping - Check bot response time
 /help - Show this help message
-/setautodelete - Configure automatic file deletion (admins)
-/autodelete - Show/configure automatic file deletion (admins)
-/removebook - Remove a deleted/retired book from the index (admins)
 
 <b>Need help?</b>
 Contact the bot owner for support."""
 
     send_message(message["chat"]["id"], text, reply_to=message.get("message_id"), disable_preview=True)
+
+
+
+def handle_admin_help(message):
+    uid = user_id(message)
+    if not is_admin(uid):
+        send_message(
+            message["chat"]["id"],
+            "❌ This command is available to admins only.",
+            reply_to=message.get("message_id"),
+        )
+        return
+
+    text = """<b>🛠 Admin Help</b>
+
+<b>📚 Book Management</b>
+/files - View the indexed book catalog
+/rename - Rename a book and update its index
+/removebook - Remove a book from the index
+
+<b>👥 Admin Management</b>
+/addadmin - Add an admin
+/removeadmin - Remove an admin
+/listadmins - List all admins
+
+<b>⚙️ Bot Settings</b>
+/setautodelete - Set automatic file deletion duration
+/autodelete - View the current auto-delete setting
+
+<b>📊 Statistics & Utilities</b>
+/stats - View bot statistics
+/batch - Generate links for multiple files
+/genlink - Generate a link for a file
+/users - View user information
+/broadcast - Broadcast a message
+/ping - Check bot response time
+
+<b>ℹ️ Help</b>
+/help - Show user commands
+/adminhelp - Show this admin help
+
+<i>All commands above are restricted to authorized admins where applicable.</i>"""
+
+    send_message(
+        message["chat"]["id"],
+        text,
+        reply_to=message.get("message_id"),
+        disable_preview=True,
+    )
 
 
 def handle_ping(message):
@@ -1112,6 +1157,13 @@ def handle_removebook(message, args):
 
 
 def handle_files(message):
+    if not is_admin(user_id(message)):
+        send_message(
+            message["chat"]["id"],
+            "❌ The /files command is available to admins only."
+        )
+        return
+
     supported_files = [item for item in file_index if is_supported_book_name(item.get("file_name"))]
     if not supported_files:
         send_message(
@@ -1481,6 +1533,10 @@ def handle_callback(query):
     elif data == "close":
         delete_message(chat_id, message_id)
     elif data.startswith("files_page_"):
+        callback_user_id = int((query.get("from") or {}).get("id", 0))
+        if not is_admin(callback_user_id):
+            answer_callback(query.get("id"), "The book catalog is available to admins only.")
+            return
         try:
             page = int(data.rsplit("_", 1)[1])
         except ValueError:
@@ -1785,6 +1841,8 @@ def process_message(message):
     elif command == "/help" and is_private(message):
         if subscribed(uid):
             handle_help(message)
+    elif command == "/adminhelp" and is_private(message):
+        handle_admin_help(message)
     elif command == "/ping" and is_private(message):
         handle_ping(message)
     elif command == "/files" and is_private(message):
