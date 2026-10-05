@@ -1,152 +1,257 @@
-# Annie's Bookshelf — Flask Webhook Bot
+# Annie's Bookshelf — Telegram Book-Sharing Bot
 
-Telegram book-sharing bot using **Flask + Telegram Bot API webhooks**. It is designed to run as a Render Web Service (including the free tier).
+A Telegram book-sharing bot built with **Flask + Telegram Bot API webhooks**. It is designed to run as a **Render Web Service**, including the free tier, and uses **MongoDB Atlas** for persistent bot data when `MONGODB_URI` is configured.
+
+## Features
+
+- 📚 PDF and EPUB book indexing and deep-link generation
+- 🔎 Admin-only `/files` catalog with pagination
+- 🔗 `/genlink` and `/batch` for generating book links
+- ✏️ Rename indexed channel documents with `/rename`
+- 🗑️ Remove stale catalog entries with `/removebook`
+- 👥 Runtime admin management with `/addadmin`, `/removeadmin`, and `/listadmins`
+- ⏱️ Configurable automatic deletion of delivered books
+- 📢 Admin broadcast support
+- 📊 Basic bot statistics and user management
+- 💾 MongoDB persistence for files, admins, users, settings, and pending deletions
+- 🌐 Flask webhook endpoint suitable for Render Web Services
 
 ## Commands
 
-### User commands
+### 👤 User commands
+
+These are the commands shown by `/help`:
 
 | Command | Description |
 |---|---|
 | `/start` | Start the bot or open a book from a generated deep link |
-| `/files` | List files currently present in the bot's file index |
-| `/help` | Show available commands |
-| `/ping` | Check bot response time |
+| `/ping` | Check whether the bot is responding |
+| `/help` | Show user commands |
 
-### Admin commands
+> `/files` is **admin-only** and is intentionally not shown in the public `/help` message.
+
+### 🛠️ Admin commands
+
+Admins can use `/adminhelp` to see the admin command list.
 
 | Command | Description |
 |---|---|
-| `/users` | Show total bot users |
-| `/broadcast` | Broadcast a replied message to users |
-| `/batch` | Generate a deep link for a range of channel posts |
+| `/files` | View the indexed PDF/EPUB book catalog |
+| `/rename` | Rename a channel document and update its index |
+| `/removebook` | Remove a book from the `/files` index without deleting the channel post |
 | `/genlink` | Generate a deep link for a channel post |
+| `/batch` | Generate links for multiple channel posts |
 | `/addadmin` | Add an admin by ID, username, or reply |
 | `/removeadmin` | Remove an admin by ID, username, or reply |
-| `/listadmins` | List admins |
-| `/stats` | Show bot uptime |
-| `/rename` | Rename an indexed DB-channel document |
-| `/autodelete` | Show time to autodelete document |
-| `/setautodelete` | Set time to autodelete document |
+| `/listadmins` | List configured admins |
+| `/setautodelete` | Set automatic deletion duration |
+| `/autodelete` | View the current automatic deletion setting |
+| `/stats` | Show bot statistics/uptime |
+| `/users` | View user information |
+| `/broadcast` | Broadcast a replied message to users |
+| `/adminhelp` | Show the admin command list |
 
-## Important `/files` behavior
+Admin commands verify the user's Telegram ID before performing protected operations.
 
-Telegram's standard Bot API does **not** provide a method for reading arbitrary historical channel messages. Therefore `/files` is populated from:
+## Book file types
 
-1. New `channel_post` updates received after the webhook is active.
-2. Files uploaded to the bot by an admin.
-3. Existing channel documents that an admin forwards to the bot while using `/genlink` or `/batch`.
+Only the following file extensions are supported:
 
-This means an old channel can be backfilled by forwarding its book posts to the bot. The file index is stored locally in `files_index.json`; Render's free filesystem is ephemeral, so the index can be lost after a restart/redeploy. Use a persistent database if you need the `/files` catalog to survive restarts.
+- `.pdf`
+- `.epub`
 
-## Important `/rename` behavior
+The extension check is case-insensitive. Unsupported files are rejected by book-link generation and are not displayed in `/files`.
 
-Use `/rename` from a private admin chat:
+## Book indexing
 
-1. Forward the document from the DB channel to the bot.
-2. Reply to that forwarded document with `/rename New Book Name.pdf`.
-3. The bot downloads the document, uploads it to the DB channel with the new filename, updates `/files`, adds a new deep link, and removes the old DB-channel post.
+The bot builds its catalog from Telegram updates and supported admin workflows. Telegram's standard Bot API does **not** provide a general method for reading arbitrary historical channel posts, so an already-existing channel may need to be backfilled using the bot's supported link-generation workflows.
 
-The public Telegram Bot API currently limits `getFile` downloads to **20 MB**, so this Flask implementation can rename documents up to 20 MB. Larger files require a different Telegram API setup (for example, a local Bot API server or an MTProto client).
+When MongoDB is configured, indexed files are persisted in the `files` collection, so the catalog does not need to be rebuilt after a normal Render restart or redeploy.
+
+### Removing a book
+
+`/removebook` removes a book from the bot's searchable catalog without deleting the original Telegram channel post:
+
+```text
+/removebook 1234
+```
+
+You can also provide a supported channel-post link.
+
+This is useful when a channel post has been deleted and its old entry should no longer appear in `/files`.
+
+## Rename a book
+
+From a private admin chat:
+
+1. Forward the document from the configured book channel to the bot.
+2. Reply to the forwarded document with:
+
+```text
+/rename New Book Name.pdf
+```
+
+3. The bot downloads the source document, uploads the renamed document to the configured channel, updates the book index, creates the new link information, and removes the old channel post when possible.
+
+> The public Telegram Bot API currently limits `getFile` downloads to **20 MB**. Larger files require a different Telegram API setup, such as a local Bot API server or an MTProto client.
+
+## Automatic deletion
+
+Books delivered through generated links can be automatically deleted from the user's chat. The original channel copy is not deleted.
+
+Examples:
+
+```text
+/setautodelete 30s
+/setautodelete 10m
+/setautodelete 2h
+/setautodelete 1d
+/setautodelete 0
+```
+
+- `0` disables automatic deletion.
+- `/autodelete` displays the current setting.
+- Pending deletion jobs are persisted in MongoDB when MongoDB is configured.
+
+> Render Free services can sleep. If the service is asleep when a deletion becomes due, cleanup can be delayed until the service wakes up and processes pending jobs. Exact deletion timing therefore cannot be guaranteed on a sleeping free service.
+
+## MongoDB Atlas
+
+MongoDB is optional for local development, but **recommended for Render deployment** when persistent state is required.
+
+When `MONGODB_URI` is configured, the bot uses the database specified by `MONGODB_DB_NAME` and persists data including:
+
+- `files` — indexed book/channel documents
+- `admins` — runtime admins
+- `settings` — persistent bot settings such as auto-delete configuration
+- `pending_deletions` — scheduled/overdue deletion jobs
+- `users` — known bot users
+- `user_profiles` — stored user profile information
+
+Recommended environment variables:
+
+```text
+MONGODB_URI=mongodb+srv://<username>:<password>@<cluster>/<database>
+MONGODB_DB_NAME=book_sharing_bot
+```
+
+See [`MONGODB_RENDER_SETUP.md`](MONGODB_RENDER_SETUP.md) for the Render + MongoDB setup.
 
 ## Environment variables
 
 | Variable | Required | Description |
 |---|---|---|
-| `TG_BOT_TOKEN` | Yes | Token from BotFather |
-| `CHANNEL_ID` | Yes | DB channel ID, e.g. `-1001234567890` |
+| `TG_BOT_TOKEN` | Yes | Token generated by BotFather |
+| `CHANNEL_ID` | Yes | ID of the configured book/database channel, e.g. `-1001234567890` |
 | `OWNER_ID` | Yes | Telegram user ID of the bot owner |
-| `DEFAULT_ADMINS` | No | Permanent admin user IDs, separated by commas or spaces; restored on every startup/deploy |
-| `ADMINS` | No | Additional admin user IDs, separated by commas or spaces |
-| `FORCE_SUB_CHANNEL` | No | Channel ID for force subscription; `0` disables it |
-| `START_MESSAGE` | No | Custom start message |
-| `START_PIC` | No | Reserved start image setting |
+| `DEFAULT_ADMINS` | No | Permanent admin IDs separated by commas or spaces |
+| `ADMINS` | No | Additional admin IDs separated by commas or spaces |
+| `MONGODB_URI` | Recommended on Render | MongoDB Atlas connection string |
+| `MONGODB_DB_NAME` | No | MongoDB database name; defaults to `book_sharing_bot` |
+| `FORCE_SUB_CHANNEL` | No | Channel ID used for force subscription; `0` disables it |
+| `START_MESSAGE` | No | Custom `/start` message |
+| `START_PIC` | No | Optional/reserved start image setting |
 | `FORCE_SUB_MESSAGE` | No | Custom force-subscription message |
 | `CUSTOM_CAPTION` | No | Caption template for delivered documents |
-| `PROTECT_CONTENT` | No | `True` prevents forwarding/saving where supported |
-| `AUTO_DELETE_TIME` | No | Auto-delete delay in seconds; `0` disables it |
-| `DISABLE_CHANNEL_BUTTON` | No | `True` disables generated share buttons on channel posts |
-| `USER_REPLY_TEXT` | No | Default reply to unsupported direct messages |
-| `WEBHOOK_URL` | Yes on Render | Public service URL, e.g. `https://your-service.onrender.com` |
+| `PROTECT_CONTENT` | No | `True` enables Telegram content protection where supported |
+| `AUTO_DELETE_TIME` | No | Initial auto-delete delay in seconds; `0` disables it |
+| `DISABLE_CHANNEL_BUTTON` | No | `True` disables generated channel share buttons |
+| `USER_REPLY_TEXT` | No | Default response to unsupported direct messages |
+| `WEBHOOK_URL` | Yes on Render | Public Render service URL without a trailing `/` |
 | `WEBHOOK_SECRET` | No | Secret token used to validate Telegram webhook requests |
-| `DATA_DIR` | No | Directory for JSON state files; defaults to project directory |
+| `DATA_DIR` | No | Directory for local fallback JSON state |
 
-`APP_ID` and `API_HASH` are **not required** by the Flask/Telegram Bot API version.
+`APP_ID` and `API_HASH` are not required by this Flask/Telegram Bot API implementation.
 
+## Admin persistence
 
-## Permanent default admins
+`OWNER_ID` and `DEFAULT_ADMINS` are useful for permanent access because they are loaded on every startup.
 
-To keep specific admins across Render redeploys without MongoDB, set the `DEFAULT_ADMINS` environment variable. For example:
+Example:
 
 ```text
 DEFAULT_ADMINS=123456789,987654321
 ```
 
-You can also use spaces:
+Spaces are also supported:
 
 ```text
 DEFAULT_ADMINS=123456789 987654321
 ```
 
-These users are loaded as admins every time the bot starts. `/removeadmin` cannot remove a user from `DEFAULT_ADMINS`; remove their ID from the Render environment variable and redeploy to revoke their default-admin access. The owner (`OWNER_ID`) remains an admin as well.
+`/removeadmin` cannot remove the owner or a user configured through `DEFAULT_ADMINS`. Remove the ID from the Render environment variable if that permanent access should be revoked.
 
-Runtime admins added with `/addadmin` are still stored in `admins.json`, but on Render Free that local file can be lost on a redeploy.
+When MongoDB is configured, runtime admins added with `/addadmin` are persisted in the `admins` collection and survive Render redeploys.
 
 ## Render deployment
 
-Use a **Web Service** with:
+Create a **Web Service** on Render.
 
-- Build command: `pip install -r requirements.txt`
-- Start command: `gunicorn --workers 1 app:app`
+### Build command
 
-Set `WEBHOOK_URL` to the Render service URL, without a trailing `/`.
+```bash
+pip install -r requirements.txt
+```
 
-The app also exposes:
+### Start command
 
-- `/health` — health check
-- `/setwebhook` — registers the webhook
-- `/getwebhook` — shows Telegram webhook status
-- `/deletewebhook` — removes the webhook
+```bash
+gunicorn --workers 1 app:app
+```
 
-After deployment, open `/setwebhook` once if the webhook was not automatically registered.
+Set `WEBHOOK_URL` to your Render service URL, for example:
+
+```text
+https://your-service.onrender.com
+```
+
+The application exposes these useful endpoints:
+
+| Endpoint | Purpose |
+|---|---|
+| `/health` | Health check |
+| `/setwebhook` | Register the Telegram webhook |
+| `/getwebhook` | View Telegram webhook status |
+| `/deletewebhook` | Remove the Telegram webhook |
+| `/webhook` | Telegram update endpoint |
+
+After deployment, open `/setwebhook` once if the webhook has not been registered automatically.
 
 ## Telegram channel setup
 
-1. Create the DB channel.
+1. Create the book/database channel.
 2. Add the bot as an administrator.
-3. Give it permission to post/edit messages and delete messages if you want `/rename` to replace old posts.
+3. Give the bot permission to post/edit messages and delete messages if `/rename` should replace old posts.
 4. Set `CHANNEL_ID` to the channel ID.
-5. Publish a new document to verify that `/files` receives the `channel_post` update.
+5. Publish a PDF or EPUB document and verify that the bot receives the channel update.
 
-## Local run
+## Local development
 
 ```bash
 pip install -r requirements.txt
 python main.py
 ```
 
+For persistent local testing, configure `MONGODB_URI` and `MONGODB_DB_NAME` in your environment.
+
+## Project structure
+
+```text
+Book-Sharing-Bot/
+├── app.py
+├── bot.py
+├── config.py
+├── main.py
+├── helper_func.py
+├── database/
+├── plugins/
+├── requirements.txt
+├── Procfile
+├── Dockerfile
+├── MONGODB_RENDER_SETUP.md
+└── README.md
+```
+
 ## License
 
-GNU GPLv3 — see `LICENSE`.
-
-
-## Automatic file deletion
-
-Files delivered to users through a `/start` book link can be automatically deleted from the user's chat after a configurable period. Only the delivered copy is deleted; the original file in the DB channel is not deleted.
-
-Admin commands:
-
-- `/autodelete` - Show the current setting and usage.
-- `/setautodelete 30s` - Delete delivered files after 30 seconds.
-- `/setautodelete 10m` - Delete after 10 minutes.
-- `/setautodelete 2h` - Delete after 2 hours.
-- `/setautodelete 1d` - Delete after 1 day.
-- `/setautodelete 0` - Disable automatic deletion.
-
-The setting and pending deletion queue are stored in the bot's local `DATA_DIR`. The `AUTO_DELETE_TIME` environment variable is used as the initial default when no saved setting exists.
-
-> Render Free uses an ephemeral filesystem. The cleanup worker runs while the web service is running; if the service is asleep, Telegram message deletion can be delayed until the service wakes and receives/handles traffic.
-
-
-## Book link file types
-Only `.pdf` and `.epub` files are supported for generated download links. Other media/files are rejected by `/genlink`, `/batch`, admin uploads, and are not shown in `/files`.
+GNU GPLv3 — see [`LICENSE`](LICENSE).
