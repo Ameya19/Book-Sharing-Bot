@@ -1128,11 +1128,19 @@ def parse_channel_message_id(value):
 def handle_removebook(message, args):
     """Delete a book channel post and remove its catalog entry.
 
-    Supports both:
-      1. /removebook <message_id or channel_post_link>
-      2. Reply to a forwarded/channel book message with /removebook
+    Supports:
+      1. Reply to the book message with /removebook.
+      2. /removebook <message_id>.
+      3. /removebook <channel_post_link>.
+
+    A command sent directly in the configured channel is also accepted when
+    it is a reply to a channel post. Only channel admins can normally post
+    there, so this is useful when an admin wants to remove a book without
+    leaving the channel.
     """
-    if not is_admin(user_id(message)):
+    private_admin = is_admin(user_id(message))
+    in_configured_channel = int(message.get("chat", {}).get("id", 0)) == CHANNEL_ID
+    if not private_admin and not in_configured_channel:
         return
 
     chat_id = message["chat"]["id"]
@@ -1650,6 +1658,14 @@ def process_private_media(message):
 
 def process_channel_post(message):
     if int(message.get("chat", {}).get("id", 0)) != CHANNEL_ID:
+        return
+
+    # Admin channel commands are delivered as channel_post updates rather
+    # than normal message updates. Handle /removebook here so an admin can
+    # reply directly to a book post in the channel.
+    command, args = command_parts(message)
+    if command == "/removebook":
+        handle_removebook(message, args)
         return
 
     # Always index the post. DISABLE_CHANNEL_BUTTON only controls the
