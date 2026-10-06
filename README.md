@@ -38,7 +38,7 @@ Admins can use `/adminhelp` to see the admin command list.
 |---|---|
 | `/files` | View the indexed PDF/EPUB book catalog |
 | `/rename` | Rename a channel document and update its index |
-| `/removebook` | Remove a book from the `/files` index without deleting the channel post |
+| `/removebook` | Delete a book from the channel and remove it from the `/files` index |
 | `/genlink` | Generate a deep link for a channel post |
 | `/batch` | Generate links for multiple channel posts |
 | `/addadmin` | Add an admin by ID, username, or reply |
@@ -70,7 +70,7 @@ When MongoDB is configured, indexed files are persisted in the `files` collectio
 
 ### Removing a book
 
-`/removebook` removes a book from the bot's searchable catalog without deleting the original Telegram channel post:
+`/removebook` now deletes the original book post from the configured Telegram channel **and** removes the corresponding entry from the bot's searchable catalog:
 
 ```text
 /removebook 1234
@@ -78,7 +78,9 @@ When MongoDB is configured, indexed files are persisted in the `files` collectio
 
 You can also provide a supported channel-post link.
 
-This is useful when a channel post has been deleted and its old entry should no longer appear in `/files`.
+The bot deletes the channel post first and removes the MongoDB/local index entry only after Telegram confirms the deletion. If the bot cannot delete the channel post, the index entry is kept and the admin is notified.
+
+> The bot must be an administrator in the configured channel with permission to delete messages.
 
 ## Rename a book
 

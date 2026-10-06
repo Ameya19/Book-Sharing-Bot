@@ -1126,34 +1126,57 @@ def parse_channel_message_id(value):
 
 
 def handle_removebook(message, args):
-    """Remove one book from the searchable index without deleting channel content."""
+    """Delete a book channel post and remove its catalog entry."""
     if not is_admin(user_id(message)):
         return
 
+    chat_id = message["chat"]["id"]
     if not args:
         send_message(
-            message["chat"]["id"],
+            chat_id,
             "Usage: <code>/removebook &lt;message_id or channel_post_link&gt;</code>\n"
             "Example: <code>/removebook 1234</code>\n"
-            "This removes only the bot's index entry; it does not delete a channel post."
+            "This deletes the channel post and removes it from the /files index."
         )
         return
 
     msg_id = parse_channel_message_id(args[0])
     if not msg_id:
-        send_message(message["chat"]["id"], "❌ Provide a valid post ID or link from the configured book channel.")
+        send_message(chat_id, "❌ Provide a valid post ID or link from the configured book channel.")
         return
 
     existed = lookup_file_info(msg_id) is not None
+
+    # Delete the source book from the configured Telegram channel first.
+    # Only remove the catalog entry after Telegram confirms the deletion, so
+    # a permissions/API failure does not leave a downloadable stale entry.
+    try:
+        tg("deleteMessage", {
+            "chat_id": CHANNEL_ID,
+            "message_id": int(msg_id),
+        })
+    except Exception as exc:
+        print(f"removebook channel deletion failed for {msg_id}: {exc}")
+        send_message(
+            chat_id,
+            f"❌ Could not delete channel post <code>{msg_id}</code>.\n\n"
+            "The book was kept in the /files index. Make sure the bot is an admin "
+            "in the channel with permission to delete messages."
+        )
+        return
+
     remove_file_index(msg_id)
     if existed:
         send_message(
-            message["chat"]["id"],
-            f"✅ Removed channel post <code>{msg_id}</code> from the /files index.\n"
-            "The original channel post was not changed."
+            chat_id,
+            f"✅ Book <code>{msg_id}</code> was deleted from the channel and removed from the /files index."
         )
     else:
-        send_message(message["chat"]["id"], f"ℹ️ Post <code>{msg_id}</code> was not present in the index.")
+        send_message(
+            chat_id,
+            f"✅ Channel post <code>{msg_id}</code> was deleted.\n"
+            "It was not present in the /files index."
+        )
 
 
 def handle_files(message):
