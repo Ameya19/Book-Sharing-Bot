@@ -1126,23 +1126,38 @@ def parse_channel_message_id(value):
 
 
 def handle_removebook(message, args):
-    """Delete a book channel post and remove its catalog entry."""
+    """Delete a book channel post and remove its catalog entry.
+
+    Supports both:
+      1. /removebook <message_id or channel_post_link>
+      2. Reply to a forwarded/channel book message with /removebook
+    """
     if not is_admin(user_id(message)):
         return
 
     chat_id = message["chat"]["id"]
-    if not args:
+    msg_id = None
+
+    # Preferred shortcut: reply to a forwarded/channel book message.
+    # extract_channel_message_id() already validates that the referenced post
+    # belongs to the configured book channel.
+    replied = message.get("reply_to_message")
+    if replied:
+        msg_id = extract_channel_message_id(replied)
+
+    # Explicit ID/link still works and takes precedence when supplied.
+    if args:
+        msg_id = parse_channel_message_id(args[0])
+
+    if not msg_id:
         send_message(
             chat_id,
-            "Usage: <code>/removebook &lt;message_id or channel_post_link&gt;</code>\n"
-            "Example: <code>/removebook 1234</code>\n"
-            "This deletes the channel post and removes it from the /files index."
+            "Usage:\n"
+            "• Reply to a forwarded book message with <code>/removebook</code>\n"
+            "• Or use <code>/removebook &lt;message_id&gt;</code>\n"
+            "• Or use <code>/removebook &lt;channel_post_link&gt;</code>\n\n"
+            "The command deletes the original channel post and removes its /files index entry."
         )
-        return
-
-    msg_id = parse_channel_message_id(args[0])
-    if not msg_id:
-        send_message(chat_id, "❌ Provide a valid post ID or link from the configured book channel.")
         return
 
     existed = lookup_file_info(msg_id) is not None
