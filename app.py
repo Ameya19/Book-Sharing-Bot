@@ -1139,11 +1139,18 @@ def handle_removebook(message, args):
     msg_id = None
 
     # Preferred shortcut: reply to a forwarded/channel book message.
-    # extract_channel_message_id() already validates that the referenced post
-    # belongs to the configured book channel.
+    # message_id_from_link_or_forward() handles Telegram's current
+    # forward_origin format as well as legacy forwarded-message fields.
     replied = message.get("reply_to_message")
     if replied:
-        msg_id = extract_channel_message_id(replied)
+        msg_id = message_id_from_link_or_forward(replied) or None
+
+        # A reply can also point directly at a channel message when Telegram
+        # includes the original chat/message metadata.
+        if not msg_id:
+            replied_chat = replied.get("chat") or {}
+            if int(replied_chat.get("id", 0)) == CHANNEL_ID and replied.get("message_id"):
+                msg_id = int(replied["message_id"])
 
     # Explicit ID/link still works and takes precedence when supplied.
     if args:
