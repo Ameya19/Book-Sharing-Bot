@@ -5,7 +5,7 @@ import time
 import base64
 import threading
 from html import escape
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import tempfile
 
@@ -100,6 +100,7 @@ ADMINS_FILE = DATA_DIR / "admins.json"
 FILES_FILE = DATA_DIR / "files_index.json"
 SETTINGS_FILE = DATA_DIR / "bot_settings.json"
 DELETIONS_FILE = DATA_DIR / "pending_deletions.json"
+DOWNLOADS_FILE = DATA_DIR / "download_stats.json"
 
 state_lock = threading.RLock()
 MONGODB_URI = os.environ.get("MONGODB_URI", "").strip()
@@ -116,11 +117,15 @@ if MONGODB_URI:
     mongo_deletions = mongo_db["pending_deletions"]
     mongo_users = mongo_db["users"]
     mongo_profiles = mongo_db["user_profiles"]
+    mongo_downloads = mongo_db["downloads"]
     mongo_files.create_index([("message_id", ASCENDING)], unique=True)
     mongo_admins.create_index([("user_id", ASCENDING)], unique=True)
     mongo_deletions.create_index([("job_key", ASCENDING)], unique=True)
+    mongo_downloads.create_index([("downloaded_at", ASCENDING)])
+    mongo_downloads.create_index([("user_id", ASCENDING), ("downloaded_at", ASCENDING)])
+    mongo_downloads.create_index([("message_id", ASCENDING), ("downloaded_at", ASCENDING)])
 else:
-    mongo_files = mongo_admins = mongo_settings = mongo_deletions = mongo_users = mongo_profiles = None
+    mongo_files = mongo_admins = mongo_settings = mongo_deletions = mongo_users = mongo_profiles = mongo_downloads = None
 pending_actions = {}  # user_id -> {"type": "genlink"|"batch", "step": 1|2}
 
 session = requests.Session()
@@ -182,6 +187,10 @@ if mongo_db is not None:
 pending_deletions = load_json(DELETIONS_FILE, [])
 if mongo_db is not None:
     pending_deletions = [{k: v for k, v in x.items() if k not in {"_id", "job_key"}} for x in mongo_deletions.find({})]
+
+# Download analytics. MongoDB is the durable store; the local JSON file is a
+# fallback for development or deployments where MongoDB is not configured.
+download_stats = load_json(DOWNLOADS_FILE, [])
 delete_worker_started = False
 
 
@@ -192,7 +201,18 @@ def add_user(user_id, user=None):
             users.add(user_id)
             save_json(USERS_FILE, sorted(users))
             if mongo_db is not None:
-                mongo_users.update_one({"user_id": int(user_id)}, {"$set": {"user_id": int(user_id)}}, upsert=True)
+                mongo_users.update_one(
+                    {"user_id": int(user_id)},
+                    {"$set": {"user_id": int(user_id)}, "$setOnInsert": {"first_seen": datetime.utcnow()}},
+                    upsert=True
+                )
+        elif mongo_db is not None:
+            # Older users may already exist in MongoDB without a first_seen field.
+            mongo_users.update_one(
+                {"user_id": int(user_id)},
+                {"$set": {"user_id": int(user_id)}},
+                upsert=True
+            )
 
         if user:
             username = (user.get("username") or "").strip().lstrip("@").lower()
@@ -859,6 +879,204 @@ def handle_auto_delete(message, args):
         )
 
 
+# ------------------------- statistics -------------------------
+
+def record_download(user_id_value, message_id, info=None):
+    """Record one successful book delivery for persistent admin analytics."""
+    if not user_id_value or not message_id:
+        return
+    info = info or lookup_file_info(message_id) or {}
+    now = datetime.utcnow()
+    event = {
+        "user_id": int(user_id_value),
+        "message_id": int(message_id),
+        "book_name": info.get("file_name") or "Unknown book",
+        "file_type": Path(str(info.get("file_name") or "")).suffix.lower().lstrip("."),
+        "downloaded_at": now,
+    }
+    with state_lock:
+        if mongo_db is not None:
+            mongo_downloads.insert_one(event)
+        else:
+            serializable = dict(event)
+            serializable["downloaded_at"] = now.isoformat()
+            download_stats.append(serializable)
+            # Keep the fallback bounded so a local deployment cannot grow forever.
+            download_stats[:] = download_stats[-20000:]
+            save_json(DOWNLOADS_FILE, download_stats)
+
+
+def _stats_since(days):
+    return datetime.utcnow() - timedelta(days=days)
+
+
+def _stats_total_downloads():
+    if mongo_db is not None:
+        return mongo_downloads.count_documents({})
+    return len(download_stats)
+
+
+def _stats_downloads_since(days):
+    cutoff = _stats_since(days)
+    if mongo_db is not None:
+        return mongo_downloads.count_documents({"downloaded_at": {"$gte": cutoff}})
+    total = 0
+    for item in download_stats:
+        try:
+            when = datetime.fromisoformat(str(item.get("downloaded_at", "")))
+            if when >= cutoff:
+                total += 1
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _stats_top_books(limit=10):
+    if mongo_db is not None:
+        return list(mongo_downloads.aggregate([
+            {"$group": {"_id": "$message_id", "name": {"$first": "$book_name"}, "downloads": {"$sum": 1}}},
+            {"$sort": {"downloads": -1}},
+            {"$limit": int(limit)},
+        ]))
+    counts = {}
+    for item in download_stats:
+        key = item.get("message_id")
+        if key is None:
+            continue
+        row = counts.setdefault(key, {"_id": key, "name": item.get("book_name") or "Unknown book", "downloads": 0})
+        row["downloads"] += 1
+    return sorted(counts.values(), key=lambda x: x["downloads"], reverse=True)[:limit]
+
+
+def _stats_top_users(limit=10):
+    if mongo_db is not None:
+        return list(mongo_downloads.aggregate([
+            {"$group": {"_id": "$user_id", "downloads": {"$sum": 1}}},
+            {"$sort": {"downloads": -1}},
+            {"$limit": int(limit)},
+        ]))
+    counts = {}
+    for item in download_stats:
+        uid = item.get("user_id")
+        if uid is not None:
+            counts[uid] = counts.get(uid, 0) + 1
+    return [{"_id": uid, "downloads": count} for uid, count in sorted(counts.items(), key=lambda x: x[1], reverse=True)[:limit]]
+
+
+def _stats_active_users(days=30):
+    cutoff = _stats_since(days)
+    if mongo_db is not None:
+        return mongo_downloads.count_documents({"downloaded_at": {"$gte": cutoff}}) and len(
+            mongo_downloads.distinct("user_id", {"downloaded_at": {"$gte": cutoff}})
+        )
+    ids = set()
+    for item in download_stats:
+        try:
+            when = datetime.fromisoformat(str(item.get("downloaded_at", "")))
+            if when >= cutoff:
+                ids.add(int(item.get("user_id")))
+        except (TypeError, ValueError):
+            continue
+    return len(ids)
+
+
+def _stats_new_users(days=7):
+    if mongo_db is not None:
+        cutoff = _stats_since(days)
+        # Only users created after this feature was installed have first_seen.
+        return mongo_users.count_documents({"first_seen": {"$gte": cutoff}})
+    return 0
+
+
+def handle_stats(message):
+    if not is_admin(user_id(message)):
+        send_message(message["chat"]["id"], "❌ This command is available to admins only.")
+        return
+
+    total_books = sum(1 for item in file_index if is_supported_book_name(item.get("file_name")))
+    pdf_count = sum(1 for item in file_index if str(item.get("file_name") or "").lower().endswith(".pdf"))
+    epub_count = sum(1 for item in file_index if str(item.get("file_name") or "").lower().endswith(".epub"))
+    total_downloads = _stats_total_downloads()
+    today = _stats_downloads_since(1)
+    week = _stats_downloads_since(7)
+    month = _stats_downloads_since(30)
+    active = _stats_active_users(30)
+    top = _stats_top_books(1)
+    most_downloaded = escape(str(top[0].get("name") or "None")) if top else "None"
+
+    seconds = int(time.time() - STARTED_AT)
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    uptime = f"{days}d {hours}h {minutes}m {secs}s" if days else f"{hours}h {minutes}m {secs}s"
+    db_status = "🟢 Connected" if mongo_db is not None else "🟡 Local fallback"
+
+    text = f"""<b>📊 Annie's Bookshelf — Statistics</b>
+
+<b>📚 Library</b>
+━━━━━━━━━━━━━━━━
+Total Books: <code>{total_books}</code>
+PDF: <code>{pdf_count}</code>
+EPUB: <code>{epub_count}</code>
+
+<b>👥 Users</b>
+━━━━━━━━━━━━━━━━
+Total Users: <code>{len(users)}</code>
+Active (30d): <code>{active}</code>
+New Users (7d): <code>{_stats_new_users(7)}</code>
+
+<b>⬇️ Downloads</b>
+━━━━━━━━━━━━━━━━
+Total Downloads: <code>{total_downloads}</code>
+Last 24h: <code>{today}</code>
+Last 7d: <code>{week}</code>
+Last 30d: <code>{month}</code>
+
+<b>🏆 Most Downloaded</b>
+{most_downloaded}
+
+<b>⚙️ Bot</b>
+━━━━━━━━━━━━━━━━
+Admins: <code>{len(ADMINS)}</code>
+Auto-delete: <code>{escape(format_duration(get_auto_delete_time())) if get_auto_delete_time() else 'Disabled'}</code>
+Database: {db_status}
+Uptime: <code>{uptime}</code>"""
+    send_message(message["chat"]["id"], text, disable_preview=True)
+
+
+def handle_topbooks(message):
+    if not is_admin(user_id(message)):
+        send_message(message["chat"]["id"], "❌ This command is available to admins only.")
+        return
+    rows = _stats_top_books(10)
+    if not rows:
+        send_message(message["chat"]["id"], "📚 No download data has been recorded yet.")
+        return
+    lines = ["<b>🏆 Top 10 Most Downloaded Books</b>", ""]
+    for i, row in enumerate(rows, 1):
+        name = escape(str(row.get("name") or "Unknown book"))
+        lines.append(f"<b>{i}.</b> {name} — <code>{row.get('downloads', 0)}</code> downloads")
+    send_message(message["chat"]["id"], "\n".join(lines), disable_preview=True)
+
+
+def handle_topusers(message):
+    if not is_admin(user_id(message)):
+        send_message(message["chat"]["id"], "❌ This command is available to admins only.")
+        return
+    rows = _stats_top_users(10)
+    if not rows:
+        send_message(message["chat"]["id"], "👥 No download data has been recorded yet.")
+        return
+    lines = ["<b>👥 Top 10 Most Active Downloaders</b>", ""]
+    for i, row in enumerate(rows, 1):
+        uid = int(row.get("_id", 0))
+        profile = next((p for p in user_profiles.values() if int(p.get("id", 0)) == uid), {})
+        name = " ".join(x for x in [profile.get("first_name", ""), profile.get("last_name", "")] if x).strip()
+        label = escape(name or (f"@{profile.get('username')}" if profile.get("username") else f"User {uid}"))
+        lines.append(f"<b>{i}.</b> {label} — <code>{row.get('downloads', 0)}</code> downloads")
+    send_message(message["chat"]["id"], "\n".join(lines), disable_preview=True)
+
+
 # ------------------------- command handlers -------------------------
 
 def handle_start(message, argument=None):
@@ -910,7 +1128,9 @@ def handle_start(message, argument=None):
                     message["chat"]["id"],
                     caption=caption
                 )
-                copied.append(result.get("message_id"))
+                copied_message_id = result.get("message_id")
+                copied.append(copied_message_id)
+                record_download(uid, msg_id, info)
             except Exception as exc:
                 print(f"copyMessage {msg_id} failed: {exc}")
 
@@ -1015,6 +1235,8 @@ def handle_admin_help(message):
 
 <b>📊 Statistics & Utilities</b>
 /stats - View bot statistics
+/topbooks - Show most downloaded books
+/topusers - Show most active downloaders
 /batch - Generate links for multiple files
 /genlink - Generate a link for a file
 /users - View user information
@@ -1552,17 +1774,6 @@ def handle_listadmins(message):
     send_message(message["chat"]["id"], "\n".join(lines), disable_preview=True)
 
 
-def handle_stats(message):
-    if not is_admin(user_id(message)):
-        return
-    seconds = int(time.time() - STARTED_AT)
-    days, rem = divmod(seconds, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes, secs = divmod(rem, 60)
-    uptime = f"{days}d {hours}h {minutes}m {secs}s" if days else f"{hours}h {minutes}m {secs}s"
-    send_message(message["chat"]["id"], BOT_STATS_TEXT.format(uptime=uptime))
-
-
 # ------------------------- callbacks -------------------------
 
 def handle_callback(query):
@@ -1925,6 +2136,10 @@ def process_message(message):
         handle_listadmins(message)
     elif command == "/stats" and is_private(message):
         handle_stats(message)
+    elif command == "/topbooks" and is_private(message):
+        handle_topbooks(message)
+    elif command == "/topusers" and is_private(message):
+        handle_topusers(message)
     elif command in ("/setautodelete", "/autodelete") and is_private(message):
         handle_auto_delete(message, args)
     elif command == "/rename" and is_private(message):
