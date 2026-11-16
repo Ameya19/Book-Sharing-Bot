@@ -117,6 +117,37 @@ Examples:
 
 > Render Free services can sleep. If the service is asleep when a deletion becomes due, cleanup can be delayed until the service wakes up and processes pending jobs. Exact deletion timing therefore cannot be guaranteed on a sleeping free service.
 
+## Genshin Impact profile module
+
+The Pyrogram/Vercel webhook runtime includes an optional public-profile lookup module powered by Enka.Network.
+
+### User commands
+
+| Command | Description |
+|---|---|
+| `/genshin` | Show Genshin module help |
+| `/gi UID` | Look up a public Genshin profile |
+| `/gisave UID` | Save your Genshin UID |
+| `/gi` | Look up your saved UID |
+| `/gicharacters` | List characters in the public showcase |
+| `/gibuilds` | Show available character stats, weapons and artifact details |
+
+The UID region is inferred from its first digit. Only data exposed through the player's in-game Character Showcase is available; players must enable **Show Character Details**. Character and item names are shown as IDs in this initial version because localized game-data assets are not bundled.
+
+### Admin feature switch
+
+| Command | Description |
+|---|---|
+| `/genshinfeature on` | Enable the module for everyone |
+| `/genshinfeature off` | Disable the module for everyone |
+| `/genshinfeature status` | Show the current state |
+
+Only configured admins and the owner can change this setting. The feature is enabled by default on a fresh installation. With `MONGODB_URI` configured, the setting is persisted in the `settings` collection and user UIDs/cache are stored in `genshin_profiles` and `genshin_cache`. These collections are created automatically on first write; no manual collection creation is required.
+
+Set `MONGODB_URI` and `MONGODB_DB_NAME=book_sharing_bot` in the deployment environment for persistence. Without MongoDB, local JSON fallback is used and may not survive serverless restarts/redeployments.
+
+The module calls Enka.Network and caches responses for five minutes. Enka.Network rate limits may temporarily prevent lookups. This module does not access private account data, passwords, wish history or account credentials.
+
 ## MongoDB Atlas
 
 MongoDB is optional for local development, but **recommended for Render deployment** when persistent state is required.
