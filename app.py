@@ -13,6 +13,135 @@ import requests
 from pymongo import MongoClient, ASCENDING
 from flask import Flask, request, jsonify
 
+import requests
+
+GENSHIN_CHARACTER_NAMES = {
+    "10000002": "Kamisato Ayaka",
+    "10000003": "Jean",
+    "10000005": "Traveler",
+    "10000006": "Lisa",
+    "10000007": "Traveler",
+    "10000014": "Barbara",
+    "10000015": "Kaeya",
+    "10000016": "Diluc",
+    "10000020": "Razor",
+    "10000021": "Amber",
+    "10000022": "Venti",
+    "10000023": "Xiangling",
+    "10000024": "Beidou",
+    "10000025": "Xingqiu",
+    "10000026": "Xiao",
+    "10000027": "Ningguang",
+    "10000029": "Klee",
+    "10000030": "Zhongli",
+    "10000031": "Fischl",
+    "10000032": "Bennett",
+    "10000033": "Tartaglia",
+    "10000034": "Noelle",
+    "10000035": "Qiqi",
+    "10000036": "Chongyun",
+    "10000037": "Ganyu",
+    "10000038": "Albedo",
+    "10000039": "Diona",
+    "10000041": "Mona",
+    "10000042": "Keqing",
+    "10000043": "Sucrose",
+    "10000044": "Xinyan",
+    "10000045": "Rosaria",
+    "10000046": "Hu Tao",
+    "10000047": "Kaedehara Kazuha",
+    "10000048": "Yanfei",
+    "10000049": "Yoimiya",
+    "10000050": "Thoma",
+    "10000051": "Eula",
+    "10000052": "Raiden Shogun",
+    "10000053": "Sayu",
+    "10000054": "Sangonomiya Kokomi",
+    "10000055": "Gorou",
+    "10000056": "Kujou Sara",
+    "10000057": "Arataki Itto",
+    "10000058": "Yae Miko",
+    "10000059": "Shikanoin Heizou",
+    "10000060": "Yelan",
+    "10000062": "Aloy",
+    "10000063": "Shenhe",
+    "10000064": "Yun Jin",
+    "10000065": "Kuki Shinobu",
+    "10000066": "Kamisato Ayato",
+    "10000067": "Collei",
+    "10000068": "Dori",
+    "10000069": "Tighnari",
+    "10000070": "Nilou",
+    "10000071": "Cyno",
+    "10000072": "Candace",
+    "10000073": "Nahida",
+    "10000074": "Layla",
+    "10000075": "Faruzan",
+    "10000076": "Wanderer",
+    "10000077": "Yaoyao",
+    "10000078": "Alhaitham",
+    "10000079": "Dehya",
+    "10000080": "Kaveh",
+    "10000081": "Kirara",
+    "10000082": "Lyney",
+    "10000083": "Lynette",
+    "10000084": "Freminet",
+    "10000085": "Wriothesley",
+    "10000086": "Neuvillette",
+    "10000087": "Charlotte",
+    "10000088": "Furina",
+    "10000089": "Navia",
+    "10000090": "Chevreuse",
+    "10000091": "Gaming",
+    "10000092": "Xianyun",
+    "10000093": "Chiori",
+    "10000094": "Arlecchino",
+    "10000095": "Clorinde",
+    "10000096": "Sethos",
+    "10000097": "Sigewinne",
+    "10000098": "Emilie",
+    "10000099": "Kachina",
+    "10000100": "Kinich",
+    "10000101": "Mualani",
+    "10000102": "Xilonen",
+    "10000103": "Chasca",
+    "10000104": "Ororon",
+    "10000105": "Mavuika",
+    "10000106": "Citlali",
+    "10000107": "Lan Yan",
+    "10000108": "Yumemizuki Mizuki",
+    "10000109": "Varesa",
+    "10000110": "Iansan",
+    "10000111": "Skirk",
+    "10000112": "Dahlia",
+    "10000113": "Ineffa",
+    "10000114": "Flins",
+    "10000115": "Lauma",
+    "10000116": "Aino",
+    "10000117": "Jahoda",
+}
+
+def get_character_name(character_id, character_data=None):
+    character_id = str(character_id)
+
+    # First try the local mapping
+    name = GENSHIN_CHARACTER_NAMES.get(character_id)
+
+    if name:
+        return name
+
+    # Try Enka character data if a name is available
+    if isinstance(character_data, dict):
+        name = (
+            character_data.get("name")
+            or character_data.get("Name")
+        )
+
+        if name:
+            return name
+
+    return f"Unknown Character ({character_id})"
+
 # ============================================================
 # Flask + Telegram Bot API version of Book-Sharing-Bot
 # This version does NOT use Pyrogram polling.
@@ -2284,11 +2413,19 @@ def _gi_stat_value(prop_id, value):
 
 
 def _gi_character_name(avatar):
-    # Prefer a localized name if a future Enka/game-data source supplies one.
-    for key in ("name", "localizedName", "avatarName", "nameText"):
-        if avatar.get(key):
-            return str(avatar[key])
-    return f"Character #{avatar.get('avatarId', 'Unknown')}"
+    avatar_id = avatar.get("avatarId")
+
+    # Convert ID to integer for mapping lookup
+    try:
+        avatar_id = int(avatar_id)
+    except (TypeError, ValueError):
+        return "Unknown Character"
+
+    # Return mapped character name
+    return GENSHIN_CHARACTER_NAMES.get(
+        avatar_id,
+        f"Unknown Character ({avatar_id})"
+    )
 
 
 def _gi_character_level(avatar):
