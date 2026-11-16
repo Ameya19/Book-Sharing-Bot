@@ -2612,8 +2612,6 @@ def handle_genshin_feature(message, args):
 
 def handle_genshin_command(message, command, args):
     chat_id = message["chat"]["id"]
-    if not is_private(message):
-        return
     if not _genshin_guard(message):
         return
     if command == "/genshin":
