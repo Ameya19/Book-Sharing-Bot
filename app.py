@@ -1927,6 +1927,13 @@ def handle_listadmins(message):
 
 def handle_callback(query):
     data = query.get("data", "")
+
+    # Genshin buttons answer their own callback query (Telegram only allows one
+    # answer per query), so route them before the generic answer below.
+    if data.startswith(("gibuild:", "gibuildback:")):
+        handle_genshin_callback(query)
+        return
+
     answer_callback(query.get("id"))
 
     msg = query.get("message") or {}
@@ -2352,62 +2359,77 @@ _GI_FIGHT_PROPS = {
     "2000": ("Max HP", "number"),
     "2001": ("ATK", "number"),
     "2002": ("DEF", "number"),
-    "2003": ("Elemental Mastery", "number"),
-    "2004": ("CRIT DMG", "percent_ratio"),
-    "2005": ("CRIT Rate", "percent_ratio"),
-    "2006": ("Energy Recharge", "percent_ratio"),
-    "2010": ("Healing Bonus", "percent_ratio"),
-    "2011": ("Incoming Healing Bonus", "percent_ratio"),
-    "2012": ("Physical DMG Bonus", "percent_ratio"),
-    "2032": ("Pyro DMG Bonus", "percent_ratio"),
-    "2033": ("Electro DMG Bonus", "percent_ratio"),
-    "2034": ("Hydro DMG Bonus", "percent_ratio"),
-    "2035": ("Dendro DMG Bonus", "percent_ratio"),
-    "2036": ("Anemo DMG Bonus", "percent_ratio"),
-    "2037": ("Geo DMG Bonus", "percent_ratio"),
-    "2038": ("Cryo DMG Bonus", "percent_ratio"),
+    "28": ("Elemental Mastery", "number"),
+    "20": ("CRIT Rate", "percent_ratio"),
+    "22": ("CRIT DMG", "percent_ratio"),
+    "23": ("Energy Recharge", "percent_ratio"),
+    "26": ("Healing Bonus", "percent_ratio"),
+    "30": ("Physical DMG Bonus", "percent_ratio"),
+    "40": ("Pyro DMG Bonus", "percent_ratio"),
+    "41": ("Electro DMG Bonus", "percent_ratio"),
+    "42": ("Hydro DMG Bonus", "percent_ratio"),
+    "43": ("Dendro DMG Bonus", "percent_ratio"),
+    "44": ("Anemo DMG Bonus", "percent_ratio"),
+    "45": ("Geo DMG Bonus", "percent_ratio"),
+    "46": ("Cryo DMG Bonus", "percent_ratio"),
 }
 _GI_STAT_NAMES = {
     "FIGHT_PROP_HP": "HP", "FIGHT_PROP_HP_PERCENT": "HP%",
     "FIGHT_PROP_ATTACK": "ATK", "FIGHT_PROP_ATTACK_PERCENT": "ATK%",
     "FIGHT_PROP_DEFENSE": "DEF", "FIGHT_PROP_DEFENSE_PERCENT": "DEF%",
     "FIGHT_PROP_CRITICAL": "CRIT Rate", "FIGHT_PROP_CRITICAL_HURT": "CRIT DMG",
-    "FIGHT_PROP_CHARGE效率": "Energy Recharge", "FIGHT_PROP_CHARGE_EFFICIENCY": "Energy Recharge",
+    "FIGHT_PROP_CHARGE_EFFICIENCY": "Energy Recharge",
     "FIGHT_PROP_ELEMENT_MASTERY": "Elemental Mastery",
-    "FIGHT_PROP_HEAL加成": "Healing Bonus", "FIGHT_PROP_HEAL加成": "Healing Bonus",
+    "FIGHT_PROP_HEAL_ADD": "Healing Bonus",
     "FIGHT_PROP_PHYSICAL_ADD_HURT": "Physical DMG Bonus",
     "FIGHT_PROP_FIRE_ADD_HURT": "Pyro DMG Bonus", "FIGHT_PROP_ELEC_ADD_HURT": "Electro DMG Bonus",
     "FIGHT_PROP_WATER_ADD_HURT": "Hydro DMG Bonus", "FIGHT_PROP_GRASS_ADD_HURT": "Dendro DMG Bonus",
     "FIGHT_PROP_WIND_ADD_HURT": "Anemo DMG Bonus", "FIGHT_PROP_ROCK_ADD_HURT": "Geo DMG Bonus",
     "FIGHT_PROP_ICE_ADD_HURT": "Cryo DMG Bonus",
 }
+_GI_PERCENT_NAMES = {
+    "HP%", "ATK%", "DEF%", "CRIT Rate", "CRIT DMG", "Energy Recharge", "Healing Bonus",
+    "Physical DMG Bonus", "Pyro DMG Bonus", "Electro DMG Bonus", "Hydro DMG Bonus",
+    "Dendro DMG Bonus", "Anemo DMG Bonus", "Geo DMG Bonus", "Cryo DMG Bonus",
+}
+
+# Enka text-map (English) used to resolve weapon / artifact name hashes.
+try:
+    with open(Path(__file__).parent / "data" / "enka_en.json", encoding="utf-8") as _fh:
+        _GI_TEXT = json.load(_fh)
+except Exception as _exc:
+    print(f"Could not load data/enka_en.json: {_exc}")
+    _GI_TEXT = {}
+
+
+def _gi_item_name(flat, fallback):
+    flat = flat or {}
+    return (
+        flat.get("name")
+        or _GI_TEXT.get(str(flat.get("nameTextMapHash", "")))
+        or fallback
+    )
 
 
 def _gi_percent(value, already_percent=False):
     number = _gi_number(value)
-    if not already_percent and abs(number) <= 3:
+    if not already_percent:
         number *= 100
     return f"{number:.1f}%"
 
 
 def _gi_prop_name(prop_id):
     value = str(prop_id or "")
-    if value in _GI_STAT_NAMES:
-        return _GI_STAT_NAMES[value]
-    # Enka may return a numeric property identifier for artifact stats.
-    numeric_names = {
-        "FIGHT_PROP_HP": "HP", "FIGHT_PROP_ATTACK": "ATK",
-        "FIGHT_PROP_DEFENSE": "DEF", "FIGHT_PROP_CRITICAL": "CRIT Rate",
-        "FIGHT_PROP_CRITICAL_HURT": "CRIT DMG", "FIGHT_PROP_ELEMENT_MASTERY": "Elemental Mastery",
-        "FIGHT_PROP_CHARGE_EFFICIENCY": "Energy Recharge",
-    }
-    return numeric_names.get(value, value.replace("FIGHT_PROP_", "").replace("_", " ").title() or "Stat")
+    return _GI_STAT_NAMES.get(
+        value, value.replace("FIGHT_PROP_", "").replace("_", " ").title() or "Stat"
+    )
 
 
 def _gi_stat_value(prop_id, value):
+    """Format an artifact/weapon stat. Enka returns these already as percent (46.6)."""
     name = _gi_prop_name(prop_id)
-    if "%" in name or name in ("CRIT Rate", "CRIT DMG", "Energy Recharge", "Healing Bonus", "Physical DMG Bonus", "Pyro DMG Bonus", "Electro DMG Bonus", "Hydro DMG Bonus", "Dendro DMG Bonus", "Anemo DMG Bonus", "Geo DMG Bonus", "Cryo DMG Bonus"):
-        return _gi_percent(value)
+    if name in _GI_PERCENT_NAMES:
+        return _gi_percent(value, already_percent=True)
     number = _gi_number(value)
     return f"{number:,.0f}" if number.is_integer() else f"{number:,.1f}"
 
@@ -2465,11 +2487,7 @@ def _gi_character_build_text(avatar):
         flat = weapon.get("flat") or {}
         weapon_data = weapon.get("weapon") or {}
 
-        weapon_name = (
-            flat.get("name")
-            or flat.get("weaponName")
-            or "Equipped weapon"
-        )
+        weapon_name = _gi_item_name(flat, "Equipped weapon")
 
         weapon_level = weapon_data.get("level")
 
@@ -2506,7 +2524,7 @@ def _gi_character_build_text(avatar):
             flat = artifact.get("flat") or {}
             reliquary = artifact.get("reliquary") or {}
 
-            artifact_name = flat.get("name") or "Artifact"
+            artifact_name = _gi_item_name(flat, "Artifact")
             artifact_level = reliquary.get("level")
 
             main = flat.get("reliquaryMainstat") or {}
@@ -2661,7 +2679,7 @@ def _gi_build_lines(data):
         section = [f"\n<b>✨ {name}</b> · Lv. {level}", "\n".join(stats)]
         if weapon:
             flat = weapon.get("flat") or {}
-            weapon_name = flat.get("name") or flat.get("weaponName") or "Equipped weapon"
+            weapon_name = _gi_item_name(flat, "Equipped weapon")
             weapon_data = weapon.get("weapon") or {}
             weapon_level = weapon_data.get("level")
             refinement = None
@@ -2682,7 +2700,7 @@ def _gi_build_lines(data):
             section.append(f"🧿 <b>Artifacts:</b> {len(artifacts)} equipped")
             for artifact in artifacts[:5]:
                 flat = artifact.get("flat") or {}
-                artifact_name = flat.get("name") or "Artifact"
+                artifact_name = _gi_item_name(flat, "Artifact")
                 reliquary = artifact.get("reliquary") or {}
                 artifact_level = reliquary.get("level")
                 main = flat.get("reliquaryMainstat") or {}
@@ -2781,107 +2799,71 @@ def handle_genshin_feature(message, args):
     send_message(chat_id, text, reply_to=message.get("message_id"))
 
 def answer_callback_query(callback_id, text=None):
-    payload = {
-        "callback_query_id": callback_id
-    }
-
-    if text:
-        payload["text"] = text
-
-    response = session.post(
-        f"{TELEGRAM_API_URL}/answerCallbackQuery",
-        json=payload,
-        timeout=10
-    )
-
-    response.raise_for_status()
-    return response.json()
+    # Reuse the existing helper (uses the real Bot API URL and never raises).
+    return answer_callback(callback_id, text)
 
 
 def handle_genshin_callback(callback):
     callback_id = callback["id"]
     data = callback.get("data", "")
-
     message = callback.get("message") or {}
-
-    chat = message.get("chat") or {}
-    chat_id = chat.get("id")
+    chat_id = (message.get("chat") or {}).get("id")
     message_id = message.get("message_id")
 
     if not chat_id or not message_id:
-        answer_callback_query(
-            callback_id,
-            "This button is no longer available."
-        )
+        answer_callback_query(callback_id, "This button is no longer available.")
         return
 
-    if not _genshin_guard(message):
-        answer_callback_query(callback_id, "Genshin is disabled.")
+    if not genshin_enabled():
+        answer_callback_query(callback_id, "Genshin is disabled by an admin.")
         return
 
     try:
         parts = data.split(":")
-
-        if len(parts) != 3 or parts[0] != "gibuild":
-            answer_callback_query(callback_id, "Invalid selection.")
-            return
-
-        uid = parts[1]
-        avatar_id = parts[2]
+        action = parts[0]
+        uid = parts[1] if len(parts) > 1 else ""
 
         if not re.fullmatch(r"[6789]\d{8}", uid):
             answer_callback_query(callback_id, "Invalid UID.")
             return
 
-        if not avatar_id.isdigit():
-            answer_callback_query(callback_id, "Invalid character.")
-            return
-
-        answer_callback_query(callback_id, "Loading character build...")
-
-        profile = _get_genshin_data(uid)
-
-        avatar = next(
-            (
-                item for item in profile.get("avatarInfoList", [])
-                if str(item.get("avatarId")) == avatar_id
-            ),
-            None
-        )
-
-        if not avatar:
+        if action == "gibuildback" and len(parts) == 2:
+            answer_callback_query(callback_id)
+            profile = _get_genshin_data(uid)
             edit_message(
-                chat_id,
-                message_id,
-                "❌ Character not found in the public showcase."
+                chat_id, message_id,
+                _gi_build_selection_text(uid, profile),
+                reply_markup=_gi_build_keyboard(uid, profile),
             )
             return
 
-        text = _gi_character_build_text(avatar)
+        if action == "gibuild" and len(parts) == 3 and parts[2].isdigit():
+            avatar_id = parts[2]
+            answer_callback_query(callback_id, "Loading character build...")
+            profile = _get_genshin_data(uid)
+            avatar = next(
+                (a for a in profile.get("avatarInfoList") or []
+                 if str(a.get("avatarId")) == avatar_id),
+                None,
+            )
+            keyboard = {"inline_keyboard": [[
+                {"text": "⬅️ Back to Characters", "callback_data": f"gibuildback:{uid}"}
+            ]]}
+            if not avatar:
+                edit_message(chat_id, message_id,
+                             "❌ Character not found in the public showcase.",
+                             reply_markup=keyboard)
+                return
+            edit_message(chat_id, message_id, _gi_character_build_text(avatar),
+                         reply_markup=keyboard)
+            return
 
-        keyboard = {
-            "inline_keyboard": [[
-                {
-                    "text": "⬅️ Back to Characters",
-                    "callback_data": f"gibuildback:{uid}"
-                }
-            ]]
-        }
-
-        edit_message(
-            chat_id,
-            message_id,
-            text,
-            reply_markup=keyboard
-        )
+        answer_callback_query(callback_id, "Invalid selection.")
 
     except Exception as exc:
         print(f"Genshin callback error: {exc}")
+        answer_callback_query(callback_id, "Could not load this character's build.")
 
-        answer_callback_query(
-            callback_id,
-            "Could not load this character's build."
-        )
 
 def handle_genshin_command(message, command, args):
     chat_id = message["chat"]["id"]
@@ -2913,6 +2895,7 @@ def handle_genshin_command(message, command, args):
     wait = send_message(chat_id, "⏳ Fetching Genshin showcase data from Enka.Network...")
     try:
         data = _get_genshin_data(uid)
+        keyboard = None
         if command == "/gi":
             text = _gi_profile_text(uid, data)
         elif command == "/gicharacters":
@@ -2930,6 +2913,8 @@ def handle_genshin_command(message, command, args):
             )
             return
         # Telegram message text is limited to 4096 characters.
+        if len(text) > 4000:
+            text = text[:3950] + "\n\n<i>…output shortened.</i>"
         edit_message(chat_id, wait["message_id"], text, reply_markup=keyboard)
     except ValueError as exc:
         edit_message(chat_id, wait["message_id"], f"❌ {escape(str(exc))}")
