@@ -2408,6 +2408,26 @@ except Exception as _exc:
     _GI_TEXT = {}
 
 
+try:
+    with open(Path(__file__).parent / "data" / "enka_items.json", encoding="utf-8") as _fh:
+        _GI_ITEMS = json.load(_fh)
+except Exception as _exc:
+    print(f"Could not load data/enka_items.json: {_exc}")
+    _GI_ITEMS = {}
+_GI_WEAPONS = _GI_ITEMS.get("weapons", {})
+_GI_SETS = _GI_ITEMS.get("sets", {})
+
+# Enka equipType -> (slot key in the set data, label, emoji), in in-game order.
+_GI_SLOTS = {
+    "EQUIP_BRACER": ("flower", "Flower", "🌸"),
+    "EQUIP_NECKLACE": ("plume", "Feather", "🪶"),
+    "EQUIP_SHOES": ("sands", "Sands", "⏳"),
+    "EQUIP_RING": ("goblet", "Goblet", "🏆"),
+    "EQUIP_DRESS": ("circlet", "Circlet", "👑"),
+}
+_GI_SLOT_ORDER = list(_GI_SLOTS)
+
+
 def _gi_item_name(flat, fallback):
     flat = flat or {}
     return (
@@ -2415,6 +2435,39 @@ def _gi_item_name(flat, fallback):
         or _GI_TEXT.get(str(flat.get("nameTextMapHash", "")))
         or fallback
     )
+
+
+def _gi_weapon_name(item):
+    """Weapon name by itemId (most reliable), then by Enka text hash."""
+    return (
+        _GI_WEAPONS.get(str(item.get("itemId", "")))
+        or _gi_item_name(item.get("flat"), "Equipped weapon")
+    )
+
+
+def _gi_artifact_info(item):
+    """Return (emoji, slot label, piece name, set name) for an artifact."""
+    flat = item.get("flat") or {}
+    slot_key, label, emoji = _GI_SLOTS.get(flat.get("equipType"), (None, "Artifact", "🧿"))
+    match = re.search(r"UI_RelicIcon_(\d+)_", str(flat.get("icon", "")))
+    set_data = _GI_SETS.get(match.group(1), {}) if match else {}
+    set_name = (
+        set_data.get("name")
+        or _GI_TEXT.get(str(flat.get("setNameTextMapHash", "")))
+        or "Unknown set"
+    )
+    piece_name = (
+        (set_data.get(slot_key) if slot_key else None)
+        or _gi_item_name(flat, label)
+    )
+    return emoji, label, piece_name, set_name
+
+
+def _gi_sorted_artifacts(artifacts):
+    def key(item):
+        t = (item.get("flat") or {}).get("equipType")
+        return _GI_SLOT_ORDER.index(t) if t in _GI_SLOT_ORDER else 99
+    return sorted(artifacts, key=key)
 
 
 def _gi_percent(value, already_percent=False):
@@ -2493,7 +2546,7 @@ def _gi_character_build_text(avatar):
         flat = weapon.get("flat") or {}
         weapon_data = weapon.get("weapon") or {}
 
-        weapon_name = _gi_item_name(flat, "Equipped weapon")
+        weapon_name = _gi_weapon_name(weapon)
 
         weapon_level = weapon_data.get("level")
 
@@ -2517,7 +2570,7 @@ def _gi_character_build_text(avatar):
             weapon_detail += f" · R{refinement}"
 
         sections.append(
-            f"{escape(str(weapon_name))}{weapon_detail}"
+            f"{escape(str(weapon_name), quote=False)}{weapon_detail}"
         )
     else:
         sections.append("Weapon details unavailable")
@@ -2526,11 +2579,11 @@ def _gi_character_build_text(avatar):
     sections.append("<b>🧿 Artifacts</b>")
 
     if artifacts:
-        for artifact in artifacts[:5]:
+        for artifact in _gi_sorted_artifacts(artifacts)[:5]:
             flat = artifact.get("flat") or {}
             reliquary = artifact.get("reliquary") or {}
 
-            artifact_name = _gi_item_name(flat, "Artifact")
+            slot_emoji, slot_label, piece_name, set_name = _gi_artifact_info(artifact)
             artifact_level = reliquary.get("level")
 
             main = flat.get("reliquaryMainstat") or {}
@@ -2573,7 +2626,8 @@ def _gi_character_build_text(avatar):
                 level_text = ""
 
             sections.append(
-                f"\n<b>{escape(str(artifact_name))}{level_text}</b>"
+                f"\n{slot_emoji} <b>{slot_label}</b>: {escape(str(piece_name), quote=False)}{level_text}"
+                f"\nSet: <b>{escape(str(set_name), quote=False)}</b>"
                 f"\nMain: {escape(main_text)}"
                 f"\nSubstats: {escape(' · '.join(substats) if substats else 'Not provided')}"
             )
@@ -2685,7 +2739,7 @@ def _gi_build_lines(data):
         section = [f"\n<b>✨ {name}</b> · Lv. {level}", "\n".join(stats)]
         if weapon:
             flat = weapon.get("flat") or {}
-            weapon_name = _gi_item_name(flat, "Equipped weapon")
+            weapon_name = _gi_weapon_name(weapon)
             weapon_data = weapon.get("weapon") or {}
             weapon_level = weapon_data.get("level")
             refinement = None
