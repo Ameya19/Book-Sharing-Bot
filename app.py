@@ -2428,6 +2428,156 @@ def _gi_character_level(avatar):
     return "?"
 
 
+def _gi_character_build_text(avatar):
+    name = escape(_gi_character_name(avatar))
+    level = escape(_gi_character_level(avatar))
+
+    fight = avatar.get("fightPropMap") or {}
+
+    sections = [
+        f"<b>✨ {name}</b>",
+        f"Level: <b>{level}</b>",
+        "",
+        "<b>📊 Combat Stats</b>"
+    ]
+
+    for prop_id, (label, kind) in _GI_FIGHT_PROPS.items():
+        if prop_id not in fight:
+            continue
+
+        value = _gi_number(fight[prop_id])
+
+        if kind == "percent_ratio":
+            display = _gi_percent(value)
+        else:
+            display = f"{value:,.0f}"
+
+        sections.append(
+            f"• {label}: <b>{display}</b>"
+        )
+
+    weapon, artifacts = _gi_equipment(avatar)
+
+    sections.append("")
+    sections.append("<b>⚔️ Weapon</b>")
+
+    if weapon:
+        flat = weapon.get("flat") or {}
+        weapon_data = weapon.get("weapon") or {}
+
+        weapon_name = (
+            flat.get("name")
+            or flat.get("weaponName")
+            or "Equipped weapon"
+        )
+
+        weapon_level = weapon_data.get("level")
+
+        affixes = weapon_data.get("affixMap") or {}
+        refinement = None
+
+        if affixes:
+            try:
+                refinement = max(
+                    int(v) for v in affixes.values()
+                ) + 1
+            except (TypeError, ValueError):
+                pass
+
+        weapon_detail = ""
+
+        if weapon_level is not None:
+            weapon_detail += f" · Lv. {weapon_level}"
+
+        if refinement:
+            weapon_detail += f" · R{refinement}"
+
+        sections.append(
+            f"{escape(str(weapon_name))}{weapon_detail}"
+        )
+    else:
+        sections.append("Weapon details unavailable")
+
+    sections.append("")
+    sections.append("<b>🧿 Artifacts</b>")
+
+    if artifacts:
+        for artifact in artifacts[:5]:
+            flat = artifact.get("flat") or {}
+            reliquary = artifact.get("reliquary") or {}
+
+            artifact_name = flat.get("name") or "Artifact"
+            artifact_level = reliquary.get("level")
+
+            main = flat.get("reliquaryMainstat") or {}
+
+            main_id = (
+                main.get("mainPropId")
+                or main.get("appendPropId")
+            )
+
+            main_value = main.get("statValue")
+
+            main_text = "Main stat unavailable"
+
+            if main_id:
+                main_text = (
+                    f"{_gi_prop_name(main_id)}: "
+                    f"{_gi_stat_value(main_id, main_value)}"
+                )
+
+            substats = []
+
+            for sub in (flat.get("reliquarySubstats") or [])[:4]:
+                prop_id = (
+                    sub.get("appendPropId")
+                    or sub.get("propId")
+                )
+
+                if prop_id:
+                    substats.append(
+                        f"{_gi_prop_name(prop_id)} "
+                        f"+{_gi_stat_value(prop_id, sub.get('statValue'))}"
+                    )
+
+            try:
+                level_text = (
+                    f" +{max(0, int(artifact_level) - 1)}"
+                    if artifact_level is not None else ""
+                )
+            except (TypeError, ValueError):
+                level_text = ""
+
+            sections.append(
+                f"\n<b>{escape(str(artifact_name))}{level_text}</b>"
+                f"\nMain: {escape(main_text)}"
+                f"\nSubstats: {escape(' · '.join(substats) if substats else 'Not provided')}"
+            )
+    else:
+        sections.append("Artifact details unavailable")
+
+    return "\n".join(sections)
+
+
+def _gi_build_selection_text(uid, data):
+    avatars = data.get("avatarInfoList") or []
+
+    if not avatars:
+        return (
+            "❌ No public character build data found.\n\n"
+            "Ask the player to enable "
+            "<b>Show Character Details</b> in-game."
+        )
+
+    return (
+        "<b>🛠️ Genshin Character Builds</b>\n\n"
+        f"UID: <code>{uid}</code>\n"
+        f"Available characters: <b>{len(avatars)}</b>\n\n"
+        "Select a character below to view their build."
+    )
+
+
+
 def _gi_character_lines(data):
     avatars = data.get("avatarInfoList") or []
     if not avatars:
@@ -2460,6 +2610,27 @@ def _gi_equipment(avatar):
         elif "RELIQUARY" in item_type or item.get("reliquary"):
             artifacts.append(item)
     return weapon, artifacts
+
+def _gi_build_keyboard(uid, data):
+    avatars = data.get("avatarInfoList") or []
+
+    keyboard = []
+
+    for avatar in avatars[:20]:
+        avatar_id = avatar.get("avatarId")
+
+        if not avatar_id:
+            continue
+
+        name = _gi_character_name(avatar)
+
+        keyboard.append([{
+            "text": name,
+            "callback_data": f"gibuild:{uid}:{avatar_id}"
+        }])
+
+    return {"inline_keyboard": keyboard}
+
 
 
 def _gi_build_lines(data):
@@ -2609,6 +2780,108 @@ def handle_genshin_feature(message, args):
         text = "Usage: <code>/genshinfeature on</code>, <code>/genshinfeature off</code> or <code>/genshinfeature status</code>"
     send_message(chat_id, text, reply_to=message.get("message_id"))
 
+def answer_callback_query(callback_id, text=None):
+    payload = {
+        "callback_query_id": callback_id
+    }
+
+    if text:
+        payload["text"] = text
+
+    response = session.post(
+        f"{TELEGRAM_API_URL}/answerCallbackQuery",
+        json=payload,
+        timeout=10
+    )
+
+    response.raise_for_status()
+    return response.json()
+
+
+def handle_genshin_callback(callback):
+    callback_id = callback["id"]
+    data = callback.get("data", "")
+
+    message = callback.get("message") or {}
+
+    chat = message.get("chat") or {}
+    chat_id = chat.get("id")
+    message_id = message.get("message_id")
+
+    if not chat_id or not message_id:
+        answer_callback_query(
+            callback_id,
+            "This button is no longer available."
+        )
+        return
+
+    if not _genshin_guard(message):
+        answer_callback_query(callback_id, "Genshin is disabled.")
+        return
+
+    try:
+        parts = data.split(":")
+
+        if len(parts) != 3 or parts[0] != "gibuild":
+            answer_callback_query(callback_id, "Invalid selection.")
+            return
+
+        uid = parts[1]
+        avatar_id = parts[2]
+
+        if not re.fullmatch(r"[6789]\d{8}", uid):
+            answer_callback_query(callback_id, "Invalid UID.")
+            return
+
+        if not avatar_id.isdigit():
+            answer_callback_query(callback_id, "Invalid character.")
+            return
+
+        answer_callback_query(callback_id, "Loading character build...")
+
+        profile = _get_genshin_data(uid)
+
+        avatar = next(
+            (
+                item for item in profile.get("avatarInfoList", [])
+                if str(item.get("avatarId")) == avatar_id
+            ),
+            None
+        )
+
+        if not avatar:
+            edit_message(
+                chat_id,
+                message_id,
+                "❌ Character not found in the public showcase."
+            )
+            return
+
+        text = _gi_character_build_text(avatar)
+
+        keyboard = {
+            "inline_keyboard": [[
+                {
+                    "text": "⬅️ Back to Characters",
+                    "callback_data": f"gibuildback:{uid}"
+                }
+            ]]
+        }
+
+        edit_message(
+            chat_id,
+            message_id,
+            text,
+            reply_markup=keyboard
+        )
+
+    except Exception as exc:
+        print(f"Genshin callback error: {exc}")
+
+        answer_callback_query(
+            callback_id,
+            "Could not load this character's build."
+        )
 
 def handle_genshin_command(message, command, args):
     chat_id = message["chat"]["id"]
@@ -2644,10 +2917,20 @@ def handle_genshin_command(message, command, args):
             text = _gi_profile_text(uid, data)
         elif command == "/gicharacters":
             text = f"<b>🌟 Showcase Characters — {uid}</b>\n\n" + _gi_character_lines(data)
-        else:
-            text = f"<b>🛠 Character Builds — {uid}</b>\n" + _gi_build_lines(data)
+        elif command == "/gibuilds":
+            text = _gi_build_selection_text(uid, data)
+
+            keyboard = _gi_build_keyboard(uid, data)
+
+            edit_message(
+                chat_id,
+                wait["message_id"],
+                text,
+                reply_markup=keyboard
+            )
+            return
         # Telegram message text is limited to 4096 characters.
-        edit_message(chat_id, wait["message_id"], text[:4000])
+        edit_message(chat_id, wait["message_id"], text, reply_markup=keyboard)
     except ValueError as exc:
         edit_message(chat_id, wait["message_id"], f"❌ {escape(str(exc))}")
     except requests.RequestException as exc:
