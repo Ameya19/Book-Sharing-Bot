@@ -2713,11 +2713,11 @@ def process_message(message):
         handle_topbooks(message)
     elif command == "/topusers" and is_private(message):
         handle_topusers(message)
-    elif command == "/genshinfeature" and is_private(message):
+    elif command == "/genshinfeature":
         handle_genshin_feature(message, args)
-    elif command in ("/genshin", "/gi", "/gisave", "/gicharacters", "/gibuilds") and is_private(message):
+    elif command in ("/genshin", "/gi", "/gisave", "/gicharacters", "/gibuilds"):
         handle_genshin_command(message, command, args)
-    elif command in ("/setautodelete", "/autodelete") and is_private(message):
+    elif command in ("/setautodelete", "/autodelete"):
         handle_auto_delete(message, args)
     elif command == "/rename" and is_private(message):
         return handle_rename(message, args)
