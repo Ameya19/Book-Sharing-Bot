@@ -2217,91 +2217,230 @@ def _gi_number(value):
         return 0.0
 
 
+# Enka's fightPropMap uses numeric property IDs. Convert them into labels
+# before displaying anything to Telegram users.
+_GI_FIGHT_PROPS = {
+    "2000": ("Max HP", "number"),
+    "2001": ("ATK", "number"),
+    "2002": ("DEF", "number"),
+    "2003": ("Elemental Mastery", "number"),
+    "2004": ("CRIT DMG", "percent_ratio"),
+    "2005": ("CRIT Rate", "percent_ratio"),
+    "2006": ("Energy Recharge", "percent_ratio"),
+    "2010": ("Healing Bonus", "percent_ratio"),
+    "2011": ("Incoming Healing Bonus", "percent_ratio"),
+    "2012": ("Physical DMG Bonus", "percent_ratio"),
+    "2032": ("Pyro DMG Bonus", "percent_ratio"),
+    "2033": ("Electro DMG Bonus", "percent_ratio"),
+    "2034": ("Hydro DMG Bonus", "percent_ratio"),
+    "2035": ("Dendro DMG Bonus", "percent_ratio"),
+    "2036": ("Anemo DMG Bonus", "percent_ratio"),
+    "2037": ("Geo DMG Bonus", "percent_ratio"),
+    "2038": ("Cryo DMG Bonus", "percent_ratio"),
+}
+_GI_STAT_NAMES = {
+    "FIGHT_PROP_HP": "HP", "FIGHT_PROP_HP_PERCENT": "HP%",
+    "FIGHT_PROP_ATTACK": "ATK", "FIGHT_PROP_ATTACK_PERCENT": "ATK%",
+    "FIGHT_PROP_DEFENSE": "DEF", "FIGHT_PROP_DEFENSE_PERCENT": "DEF%",
+    "FIGHT_PROP_CRITICAL": "CRIT Rate", "FIGHT_PROP_CRITICAL_HURT": "CRIT DMG",
+    "FIGHT_PROP_CHARGE效率": "Energy Recharge", "FIGHT_PROP_CHARGE_EFFICIENCY": "Energy Recharge",
+    "FIGHT_PROP_ELEMENT_MASTERY": "Elemental Mastery",
+    "FIGHT_PROP_HEAL加成": "Healing Bonus", "FIGHT_PROP_HEAL加成": "Healing Bonus",
+    "FIGHT_PROP_PHYSICAL_ADD_HURT": "Physical DMG Bonus",
+    "FIGHT_PROP_FIRE_ADD_HURT": "Pyro DMG Bonus", "FIGHT_PROP_ELEC_ADD_HURT": "Electro DMG Bonus",
+    "FIGHT_PROP_WATER_ADD_HURT": "Hydro DMG Bonus", "FIGHT_PROP_GRASS_ADD_HURT": "Dendro DMG Bonus",
+    "FIGHT_PROP_WIND_ADD_HURT": "Anemo DMG Bonus", "FIGHT_PROP_ROCK_ADD_HURT": "Geo DMG Bonus",
+    "FIGHT_PROP_ICE_ADD_HURT": "Cryo DMG Bonus",
+}
+
+
+def _gi_percent(value, already_percent=False):
+    number = _gi_number(value)
+    if not already_percent and abs(number) <= 3:
+        number *= 100
+    return f"{number:.1f}%"
+
+
+def _gi_prop_name(prop_id):
+    value = str(prop_id or "")
+    if value in _GI_STAT_NAMES:
+        return _GI_STAT_NAMES[value]
+    # Enka may return a numeric property identifier for artifact stats.
+    numeric_names = {
+        "FIGHT_PROP_HP": "HP", "FIGHT_PROP_ATTACK": "ATK",
+        "FIGHT_PROP_DEFENSE": "DEF", "FIGHT_PROP_CRITICAL": "CRIT Rate",
+        "FIGHT_PROP_CRITICAL_HURT": "CRIT DMG", "FIGHT_PROP_ELEMENT_MASTERY": "Elemental Mastery",
+        "FIGHT_PROP_CHARGE_EFFICIENCY": "Energy Recharge",
+    }
+    return numeric_names.get(value, value.replace("FIGHT_PROP_", "").replace("_", " ").title() or "Stat")
+
+
+def _gi_stat_value(prop_id, value):
+    name = _gi_prop_name(prop_id)
+    if "%" in name or name in ("CRIT Rate", "CRIT DMG", "Energy Recharge", "Healing Bonus", "Physical DMG Bonus", "Pyro DMG Bonus", "Electro DMG Bonus", "Hydro DMG Bonus", "Dendro DMG Bonus", "Anemo DMG Bonus", "Geo DMG Bonus", "Cryo DMG Bonus"):
+        return _gi_percent(value)
+    number = _gi_number(value)
+    return f"{number:,.0f}" if number.is_integer() else f"{number:,.1f}"
+
+
+def _gi_character_name(avatar):
+    # Prefer a localized name if a future Enka/game-data source supplies one.
+    for key in ("name", "localizedName", "avatarName", "nameText"):
+        if avatar.get(key):
+            return str(avatar[key])
+    return f"Character #{avatar.get('avatarId', 'Unknown')}"
+
+
+def _gi_character_level(avatar):
+    for prop in (avatar.get("propMap") or {}).values():
+        if str(prop.get("type", "")) == "4001":
+            return str(prop.get("val", "?"))
+    return "?"
+
+
 def _gi_character_lines(data):
     avatars = data.get("avatarInfoList") or []
-    lines = []
-    for index, avatar in enumerate(avatars[:8], 1):
-        avatar_id = avatar.get("avatarId", "Unknown")
-        props = avatar.get("propMap") or {}
-        level = "?"
-        for prop in props.values():
-            if str(prop.get("type", "")) == "4001":
-                level = prop.get("val", "?")
-                break
-        cons = len(avatar.get("talentIdList") or [])
-        skills = avatar.get("skillLevelMap") or {}
-        talent_text = "/".join(str(v) for v in list(skills.values())[:3]) or "N/A"
-        lines.append(f"{index}. Character ID <code>{escape(str(avatar_id))}</code> · Lv. {escape(str(level))} · C{cons} · Talents {escape(talent_text)}")
-    if not lines:
-        return "No public showcase characters found. Enable <b>Show Character Details</b> in your in-game profile."
+    if not avatars:
+        return "No showcase characters were found. Ask the player to enable <b>Show Character Details</b> in their in-game profile."
+    lines = ["<b>🌟 Public Character Showcase</b>"]
+    for avatar in avatars[:8]:
+        name = escape(_gi_character_name(avatar))
+        level = escape(_gi_character_level(avatar))
+        constellations = len(avatar.get("talentIdList") or [])
+        skills = list((avatar.get("skillLevelMap") or {}).values())[:3]
+        talents = " / ".join(str(v) for v in skills) if skills else "Not provided"
+        lines.append(
+            f"\n<b>{name}</b>\n"
+            f"Level <b>{level}</b> · Constellation <b>C{constellations}</b>\n"
+            f"Talents: {escape(talents)}"
+        )
+    if len(avatars) > 8:
+        lines.append(f"\n<i>Showing 8 of {len(avatars)} showcase characters.</i>")
     return "\n".join(lines)
+
+
+def _gi_equipment(avatar):
+    weapon = None
+    artifacts = []
+    for item in avatar.get("equipList") or []:
+        flat = item.get("flat") or {}
+        item_type = str(flat.get("itemType", ""))
+        if "WEAPON" in item_type or item.get("weapon"):
+            weapon = item
+        elif "RELIQUARY" in item_type or item.get("reliquary"):
+            artifacts.append(item)
+    return weapon, artifacts
 
 
 def _gi_build_lines(data):
     avatars = data.get("avatarInfoList") or []
-    lines = []
+    if not avatars:
+        return "No public character build data was found. Ask the player to enable <b>Show Character Details</b> in-game."
+
+    sections = ["<b>🛠️ Character Builds</b>"]
     for avatar in avatars[:8]:
-        avatar_id = str(avatar.get("avatarId", "Unknown"))
+        name = escape(_gi_character_name(avatar))
+        level = escape(_gi_character_level(avatar))
         fight = avatar.get("fightPropMap") or {}
-        # Core combat values from Enka's fightPropMap.
-        hp = _gi_number(fight.get("2000"))
-        atk = _gi_number(fight.get("2001"))
-        defense = _gi_number(fight.get("2002"))
-        er = _gi_number(fight.get("2006"))
-        lines.append(
-            f"\n<b>Character ID {escape(avatar_id)}</b>\n"
-            f"HP: {hp:,.0f} · ATK: {atk:,.0f} · DEF: {defense:,.0f}\n"
-            f"Energy Recharge: {er * 100 if er < 10 else er:.1f}%"
-        )
-        equipment = avatar.get("equipList") or []
-        weapon = None
-        artifacts = []
-        for item in equipment:
-            flat = item.get("flat") or {}
-            item_type = str(flat.get("itemType", ""))
-            if "WEAPON" in item_type:
-                weapon = flat
-            elif "RELIQUARY" in item_type or item.get("reliquary"):
-                artifacts.append(item)
+        stats = []
+        for prop_id, (label, kind) in _GI_FIGHT_PROPS.items():
+            if prop_id not in fight:
+                continue
+            value = _gi_number(fight[prop_id])
+            if kind == "percent_ratio":
+                display = _gi_percent(value)
+            else:
+                display = f"{value:,.0f}"
+            stats.append(f"{label}: <b>{display}</b>")
+        # Keep the key combat stats easy to scan, even if some are absent.
+        if not stats:
+            stats.append("Combat stats were not included in the public response.")
+
+        weapon, artifacts = _gi_equipment(avatar)
+        section = [f"\n<b>✨ {name}</b> · Lv. {level}", "\n".join(stats)]
         if weapon:
-            lines.append("Weapon: equipped (localized weapon name requires game-data assets)")
+            flat = weapon.get("flat") or {}
+            weapon_name = flat.get("name") or flat.get("weaponName") or "Equipped weapon"
+            weapon_data = weapon.get("weapon") or {}
+            weapon_level = weapon_data.get("level")
+            refinement = None
+            affixes = weapon_data.get("affixMap") or {}
+            if affixes:
+                try:
+                    refinement = max(int(v) for v in affixes.values()) + 1
+                except (TypeError, ValueError):
+                    refinement = None
+            weapon_detail = f" · Lv. {weapon_level}" if weapon_level is not None else ""
+            if refinement:
+                weapon_detail += f" · R{refinement}"
+            section.append(f"⚔️ <b>Weapon:</b> {escape(str(weapon_name))}{weapon_detail}")
+        else:
+            section.append("⚔️ <b>Weapon:</b> Not shown")
+
         if artifacts:
-            lines.append(f"Artifacts equipped: {len(artifacts)}")
+            section.append(f"🧿 <b>Artifacts:</b> {len(artifacts)} equipped")
             for artifact in artifacts[:5]:
                 flat = artifact.get("flat") or {}
+                artifact_name = flat.get("name") or "Artifact"
+                reliquary = artifact.get("reliquary") or {}
+                artifact_level = reliquary.get("level")
                 main = flat.get("reliquaryMainstat") or {}
+                main_id = main.get("mainPropId") or main.get("appendPropId")
                 main_value = main.get("statValue")
-                main_type = main.get("mainPropId") or main.get("appendPropId") or "Main stat"
-                substats = flat.get("reliquarySubstats") or []
-                sub_text = ", ".join(
-                    f"{escape(str(x.get('appendPropId', 'Stat')))} { _gi_number(x.get('statValue')):g}"
-                    for x in substats[:4]
+                main_text = "Main stat unavailable"
+                if main_id:
+                    main_text = f"{_gi_prop_name(main_id)}: {_gi_stat_value(main_id, main_value)}"
+                substats = []
+                for sub in (flat.get("reliquarySubstats") or [])[:4]:
+                    prop_id = sub.get("appendPropId") or sub.get("propId")
+                    if prop_id:
+                        substats.append(f"{_gi_prop_name(prop_id)} +{_gi_stat_value(prop_id, sub.get('statValue'))}")
+                try:
+                    level_text = f" +{max(0, int(artifact_level) - 1)}" if artifact_level is not None else ""
+                except (TypeError, ValueError):
+                    level_text = ""
+                section.append(
+                    f"  • <b>{escape(str(artifact_name))}{level_text}</b>\n"
+                    f"    Main: {escape(main_text)}\n"
+                    f"    Substats: {escape(' · '.join(substats) if substats else 'Not provided')}"
                 )
-                lines.append(f"• Main: {escape(str(main_type))} {main_value if main_value is not None else ''}; substats: {sub_text or 'not provided'}")
         else:
-            lines.append("Artifacts: no artifact details in showcase response")
-    return "\n".join(lines) if lines else "No public showcase build data found. Enable <b>Show Character Details</b> in-game."
+            section.append("🧿 <b>Artifacts:</b> No artifact details in showcase response")
+        sections.append("\n".join(section))
+    if len(avatars) > 8:
+        sections.append(f"<i>Showing 8 of {len(avatars)} showcase characters.</i>")
+    return "\n\n".join(sections)
 
 
 def _gi_profile_text(uid, data):
     player = data.get("playerInfo") or {}
-    nickname = escape(str(player.get("nickname") or "Unknown"))
+    nickname = escape(str(player.get("nickname") or "Unknown player"))
     signature = escape(str(player.get("signature") or "Not set"))
-    lines = [
-        "<b>🎮 Genshin Impact Profile</b>",
-        f"<b>Nickname:</b> {nickname}",
-        f"<b>UID:</b> <code>{uid}</code>",
-        f"<b>Region:</b> {_uid_region(uid)}",
-        f"<b>World Level:</b> {escape(str(player.get('worldLevel', 'N/A')))}",
-        f"<b>Achievements:</b> {escape(str(player.get('finishAchievementNum', player.get('finishAchievementNum', 'N/A'))))}",
-        f"<b>Spiral Abyss:</b> {escape(str(player.get('towerFloorIndex', 'N/A')))}-{escape(str(player.get('towerLevelIndex', 'N/A')))}",
-        f"<b>Signature:</b> {signature}",
-        f"<b>Showcase characters:</b> {len(data.get('avatarInfoList') or [])}",
-        "\nUse /gicharacters or /gibuilds to see more.",
-        "<i>Data is based on the player's public in-game showcase.</i>",
-    ]
-    return "\n".join(lines)
-
+    achievements = player.get("finishAchievementNum", "N/A")
+    abyss_floor = player.get("towerFloorIndex")
+    abyss_chamber = player.get("towerLevelIndex")
+    abyss = f"Floor {abyss_floor}, Chamber {abyss_chamber}" if abyss_floor and abyss_chamber else "Not available"
+    showcase_count = len(data.get("avatarInfoList") or [])
+    return "\n".join([
+        "<b>🎮 GENSHIN IMPACT PLAYER PROFILE</b>",
+        "━━━━━━━━━━━━━━━━━━",
+        f"👤 <b>{nickname}</b>",
+        f"🆔 UID: <code>{uid}</code>",
+        f"🌏 Server: <b>{_uid_region(uid)}</b>",
+        "",
+        "<b>PLAYER PROGRESS</b>",
+        f"🏅 Adventure Rank: <b>{escape(str(player.get('level', 'N/A')))}</b>",
+        f"🌐 World Level: <b>{escape(str(player.get('worldLevel', 'N/A')))}</b>",
+        f"🏆 Achievements: <b>{escape(str(achievements))}</b>",
+        f"🌀 Spiral Abyss: <b>{escape(abyss)}</b>",
+        f"🌟 Showcase Characters: <b>{showcase_count}</b>",
+        "",
+        "<b>PLAYER SIGNATURE</b>",
+        signature,
+        "",
+        "<i>Information is limited to the player's public in-game showcase.</i>",
+        "Use /gicharacters for the character list or /gibuilds for equipment and stats.",
+    ])
 
 def _genshin_uid_for(message, args):
     if args:
