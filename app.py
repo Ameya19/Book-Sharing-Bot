@@ -2413,18 +2413,11 @@ def _gi_stat_value(prop_id, value):
 
 
 def _gi_character_name(avatar):
-    avatar_id = avatar.get("avatarId")
+    avatar_id = str(avatar.get("avatarId", ""))
 
-    # Convert ID to integer for mapping lookup
-    try:
-        avatar_id = int(avatar_id)
-    except (TypeError, ValueError):
-        return "Unknown Character"
-
-    # Return mapped character name
     return GENSHIN_CHARACTER_NAMES.get(
         avatar_id,
-        f"Unknown Character ({avatar_id})"
+        f"Character #{avatar_id}" if avatar_id else "Unknown Character"
     )
 
 
