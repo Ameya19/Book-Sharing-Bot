@@ -10,7 +10,7 @@ pyrogram.utils.MIN_CHANNEL_ID = -1009999999999
 load_dotenv()
 
 #Bot token @Botfather
-TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN") or os.environ.get("BOT_TOKEN")
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", os.environ["BOT_TOKEN"])
 
 #Your API ID from my.telegram.org
 APP_ID = int(os.environ.get("APP_ID", os.environ["APP_ID"]))

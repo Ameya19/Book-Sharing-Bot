@@ -101,6 +101,8 @@ FILES_FILE = DATA_DIR / "files_index.json"
 SETTINGS_FILE = DATA_DIR / "bot_settings.json"
 DELETIONS_FILE = DATA_DIR / "pending_deletions.json"
 DOWNLOADS_FILE = DATA_DIR / "download_stats.json"
+GENSHIN_PROFILES_FILE = DATA_DIR / "genshin_profiles.json"
+GENSHIN_CACHE_FILE = DATA_DIR / "genshin_cache.json"
 
 state_lock = threading.RLock()
 MONGODB_URI = os.environ.get("MONGODB_URI", "").strip()
@@ -124,8 +126,13 @@ if MONGODB_URI:
     mongo_downloads.create_index([("downloaded_at", ASCENDING)])
     mongo_downloads.create_index([("user_id", ASCENDING), ("downloaded_at", ASCENDING)])
     mongo_downloads.create_index([("message_id", ASCENDING), ("downloaded_at", ASCENDING)])
+    mongo_genshin_profiles = mongo_db["genshin_profiles"]
+    mongo_genshin_cache = mongo_db["genshin_cache"]
+    mongo_genshin_profiles.create_index([("telegram_user_id", ASCENDING)], unique=True)
+    mongo_genshin_cache.create_index([("uid", ASCENDING)], unique=True)
 else:
     mongo_files = mongo_admins = mongo_settings = mongo_deletions = mongo_users = mongo_profiles = mongo_downloads = None
+    mongo_genshin_profiles = mongo_genshin_cache = None
 pending_actions = {}  # user_id -> {"type": "genlink"|"batch", "step": 1|2}
 
 session = requests.Session()
@@ -1199,6 +1206,11 @@ This bot helps you access books that are agreed to read by people in Annie's Boo
 /start - Start the bot or open a shared book link
 /ping - Check bot response time
 /help - Show this help message
+/genshin - Genshin Impact profile and showcase commands
+/gi [UID] - View a Genshin profile
+/gisave UID - Save your Genshin UID
+/gicharacters [UID] - View showcase characters
+/gibuilds [UID] - View character stats, weapons and artifacts
 
 <b>Need help?</b>
 Contact the bot owner for support."""
@@ -1242,6 +1254,14 @@ def handle_admin_help(message):
 /users - View user information
 /broadcast - Broadcast a message
 /ping - Check bot response time
+
+<b>🎮 Genshin Impact</b>
+/genshin - Show Genshin commands
+/gi [UID] - View a player profile
+/gisave UID - Save your Genshin UID
+/gicharacters [UID] - View showcase characters
+/gibuilds [UID] - View character builds, weapons and artifacts
+/genshinfeature on|off|status - Enable or disable Genshin for everyone
 
 <b>ℹ️ Help</b>
 /help - Show user commands
@@ -2085,6 +2105,292 @@ def handle_rename(message, args):
                 pass
 
 
+# ------------------------- Genshin Impact module -------------------------
+
+_ENKA_API = "https://enka.network/api/uid/{uid}/"
+_ENKA_HEADERS = {"User-Agent": "AnniesBookshelfBot/1.0 (Telegram bot; Enka.Network API client)"}
+_gi_profiles_local = load_json(GENSHIN_PROFILES_FILE, {})
+_gi_cache_local = load_json(GENSHIN_CACHE_FILE, {})
+
+
+def genshin_enabled():
+    """Read the shared feature flag from MongoDB, with JSON fallback."""
+    if mongo_settings is not None:
+        try:
+            doc = mongo_settings.find_one({"_id": "genshin_feature"}) or {}
+            return bool(doc.get("enabled", True))
+        except Exception as exc:
+            print(f"Could not read Genshin feature setting: {exc}")
+    settings = load_json(SETTINGS_FILE, {})
+    return bool(settings.get("genshin_enabled", True))
+
+
+def set_genshin_enabled(enabled):
+    if mongo_settings is not None:
+        mongo_settings.update_one(
+            {"_id": "genshin_feature"},
+            {"$set": {"enabled": bool(enabled), "updated_at": datetime.utcnow()}},
+            upsert=True,
+        )
+    settings = load_json(SETTINGS_FILE, {})
+    settings["genshin_enabled"] = bool(enabled)
+    save_json(SETTINGS_FILE, settings)
+
+
+def _uid_region(uid):
+    # Genshin UID first digit identifies the server region.
+    return {"6": "America", "7": "Europe", "8": "Asia", "9": "TW/HK/MO"}.get(uid[0], "Unknown")
+
+
+def _get_saved_genshin_uid(telegram_user_id):
+    key = str(int(telegram_user_id))
+    if mongo_genshin_profiles is not None:
+        doc = mongo_genshin_profiles.find_one({"telegram_user_id": int(telegram_user_id)}) or {}
+        return doc.get("genshin_uid")
+    return (_gi_profiles_local.get(key) or {}).get("genshin_uid")
+
+
+def _save_genshin_uid(telegram_user_id, uid):
+    record = {
+        "telegram_user_id": int(telegram_user_id),
+        "genshin_uid": uid,
+        "region": _uid_region(uid),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    if mongo_genshin_profiles is not None:
+        mongo_genshin_profiles.update_one(
+            {"telegram_user_id": int(telegram_user_id)},
+            {"$set": record},
+            upsert=True,
+        )
+    else:
+        _gi_profiles_local[str(int(telegram_user_id))] = record
+        save_json(GENSHIN_PROFILES_FILE, _gi_profiles_local)
+
+
+def _get_genshin_data(uid):
+    now = datetime.utcnow()
+    if mongo_genshin_cache is not None:
+        cached = mongo_genshin_cache.find_one({"uid": uid})
+        if cached and cached.get("expires_at") and cached["expires_at"] > now:
+            return cached.get("data") or {}
+    else:
+        cached = _gi_cache_local.get(uid)
+        if cached and float(cached.get("expires_at", 0)) > time.time():
+            return cached.get("data") or {}
+
+    response = session.get(
+        _ENKA_API.format(uid=uid),
+        headers=_ENKA_HEADERS,
+        timeout=20,
+    )
+    if response.status_code == 400:
+        raise ValueError("That UID format is invalid. Please check the 9-digit UID.")
+    if response.status_code == 404:
+        raise ValueError("Player not found. Please check the UID.")
+    if response.status_code == 429:
+        raise ValueError("Enka.Network is rate-limiting requests. Please try again later.")
+    if response.status_code == 424:
+        raise ValueError("Genshin data is temporarily unavailable during a game update.")
+    if response.status_code >= 500:
+        raise ValueError("Enka.Network is temporarily unavailable. Please try again later.")
+    response.raise_for_status()
+    data = response.json()
+    ttl = max(60, min(int(data.get("ttl", 300) or 300), 86400))
+    expires_at = now + timedelta(seconds=ttl)
+    if mongo_genshin_cache is not None:
+        mongo_genshin_cache.update_one(
+            {"uid": uid},
+            {"$set": {"uid": uid, "data": data, "expires_at": expires_at, "cached_at": now}},
+            upsert=True,
+        )
+    else:
+        _gi_cache_local[uid] = {"data": data, "expires_at": time.time() + ttl}
+        save_json(GENSHIN_CACHE_FILE, _gi_cache_local)
+    return data
+
+
+def _gi_number(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _gi_character_lines(data):
+    avatars = data.get("avatarInfoList") or []
+    lines = []
+    for index, avatar in enumerate(avatars[:8], 1):
+        avatar_id = avatar.get("avatarId", "Unknown")
+        props = avatar.get("propMap") or {}
+        level = "?"
+        for prop in props.values():
+            if str(prop.get("type", "")) == "4001":
+                level = prop.get("val", "?")
+                break
+        cons = len(avatar.get("talentIdList") or [])
+        skills = avatar.get("skillLevelMap") or {}
+        talent_text = "/".join(str(v) for v in list(skills.values())[:3]) or "N/A"
+        lines.append(f"{index}. Character ID <code>{escape(str(avatar_id))}</code> · Lv. {escape(str(level))} · C{cons} · Talents {escape(talent_text)}")
+    if not lines:
+        return "No public showcase characters found. Enable <b>Show Character Details</b> in your in-game profile."
+    return "\n".join(lines)
+
+
+def _gi_build_lines(data):
+    avatars = data.get("avatarInfoList") or []
+    lines = []
+    for avatar in avatars[:8]:
+        avatar_id = str(avatar.get("avatarId", "Unknown"))
+        fight = avatar.get("fightPropMap") or {}
+        # Core combat values from Enka's fightPropMap.
+        hp = _gi_number(fight.get("2000"))
+        atk = _gi_number(fight.get("2001"))
+        defense = _gi_number(fight.get("2002"))
+        er = _gi_number(fight.get("2006"))
+        lines.append(
+            f"\n<b>Character ID {escape(avatar_id)}</b>\n"
+            f"HP: {hp:,.0f} · ATK: {atk:,.0f} · DEF: {defense:,.0f}\n"
+            f"Energy Recharge: {er * 100 if er < 10 else er:.1f}%"
+        )
+        equipment = avatar.get("equipList") or []
+        weapon = None
+        artifacts = []
+        for item in equipment:
+            flat = item.get("flat") or {}
+            item_type = str(flat.get("itemType", ""))
+            if "WEAPON" in item_type:
+                weapon = flat
+            elif "RELIQUARY" in item_type or item.get("reliquary"):
+                artifacts.append(item)
+        if weapon:
+            lines.append("Weapon: equipped (localized weapon name requires game-data assets)")
+        if artifacts:
+            lines.append(f"Artifacts equipped: {len(artifacts)}")
+            for artifact in artifacts[:5]:
+                flat = artifact.get("flat") or {}
+                main = flat.get("reliquaryMainstat") or {}
+                main_value = main.get("statValue")
+                main_type = main.get("mainPropId") or main.get("appendPropId") or "Main stat"
+                substats = flat.get("reliquarySubstats") or []
+                sub_text = ", ".join(
+                    f"{escape(str(x.get('appendPropId', 'Stat')))} { _gi_number(x.get('statValue')):g}"
+                    for x in substats[:4]
+                )
+                lines.append(f"• Main: {escape(str(main_type))} {main_value if main_value is not None else ''}; substats: {sub_text or 'not provided'}")
+        else:
+            lines.append("Artifacts: no artifact details in showcase response")
+    return "\n".join(lines) if lines else "No public showcase build data found. Enable <b>Show Character Details</b> in-game."
+
+
+def _gi_profile_text(uid, data):
+    player = data.get("playerInfo") or {}
+    nickname = escape(str(player.get("nickname") or "Unknown"))
+    signature = escape(str(player.get("signature") or "Not set"))
+    lines = [
+        "<b>🎮 Genshin Impact Profile</b>",
+        f"<b>Nickname:</b> {nickname}",
+        f"<b>UID:</b> <code>{uid}</code>",
+        f"<b>Region:</b> {_uid_region(uid)}",
+        f"<b>World Level:</b> {escape(str(player.get('worldLevel', 'N/A')))}",
+        f"<b>Achievements:</b> {escape(str(player.get('finishAchievementNum', player.get('finishAchievementNum', 'N/A'))))}",
+        f"<b>Spiral Abyss:</b> {escape(str(player.get('towerFloorIndex', 'N/A')))}-{escape(str(player.get('towerLevelIndex', 'N/A')))}",
+        f"<b>Signature:</b> {signature}",
+        f"<b>Showcase characters:</b> {len(data.get('avatarInfoList') or [])}",
+        "\nUse /gicharacters or /gibuilds to see more.",
+        "<i>Data is based on the player's public in-game showcase.</i>",
+    ]
+    return "\n".join(lines)
+
+
+def _genshin_uid_for(message, args):
+    if args:
+        uid = args[0].strip()
+    else:
+        uid = _get_saved_genshin_uid(user_id(message))
+    if not uid:
+        return None, "No UID supplied or saved. Use <code>/gi 800000000</code> or <code>/gisave 800000000</code>."
+    if not re.fullmatch(r"[6789]\d{8}", str(uid)):
+        return None, "Please provide a valid 9-digit Genshin UID beginning with 6, 7, 8 or 9."
+    return str(uid), None
+
+
+def _genshin_guard(message):
+    if not genshin_enabled():
+        send_message(message["chat"]["id"], "🎮 The Genshin Impact feature is currently disabled by an admin.", reply_to=message.get("message_id"))
+        return False
+    return True
+
+
+def handle_genshin_feature(message, args):
+    chat_id = message["chat"]["id"]
+    if not is_admin(user_id(message)):
+        send_message(chat_id, "❌ Only admins can change the Genshin feature setting.")
+        return
+    action = (args[0].lower() if args else "status")
+    if action == "on":
+        set_genshin_enabled(True)
+        text = "✅ Genshin Impact commands are now enabled for everyone."
+    elif action == "off":
+        set_genshin_enabled(False)
+        text = "🔒 Genshin Impact commands are now disabled for everyone."
+    elif action == "status":
+        text = f"🎮 Genshin Impact feature: <b>{'ENABLED' if genshin_enabled() else 'DISABLED'}</b>"
+    else:
+        text = "Usage: <code>/genshinfeature on</code>, <code>/genshinfeature off</code> or <code>/genshinfeature status</code>"
+    send_message(chat_id, text, reply_to=message.get("message_id"))
+
+
+def handle_genshin_command(message, command, args):
+    chat_id = message["chat"]["id"]
+    if not is_private(message):
+        return
+    if not _genshin_guard(message):
+        return
+    if command == "/genshin":
+        send_message(chat_id,
+            "<b>🎮 Genshin Impact Commands</b>\n\n"
+            "/gi [UID] - View player profile\n"
+            "/gisave UID - Save your UID\n"
+            "/gicharacters [UID] - View showcase characters\n"
+            "/gibuilds [UID] - View stats, weapons and artifacts\n\n"
+            "Region is detected automatically from the UID. Only public showcase data is available.",
+            reply_to=message.get("message_id"))
+        return
+    if command == "/gisave":
+        if not args or not re.fullmatch(r"[6789]\d{8}", args[0]):
+            send_message(chat_id, "Usage: <code>/gisave 800000000</code> (9-digit UID)")
+            return
+        uid = args[0]
+        _save_genshin_uid(user_id(message), uid)
+        send_message(chat_id, f"✅ Your Genshin UID <code>{uid}</code> ({_uid_region(uid)}) has been saved.", reply_to=message.get("message_id"))
+        return
+
+    uid, error = _genshin_uid_for(message, args)
+    if error:
+        send_message(chat_id, error, reply_to=message.get("message_id"))
+        return
+    wait = send_message(chat_id, "⏳ Fetching Genshin showcase data from Enka.Network...")
+    try:
+        data = _get_genshin_data(uid)
+        if command == "/gi":
+            text = _gi_profile_text(uid, data)
+        elif command == "/gicharacters":
+            text = f"<b>🌟 Showcase Characters — {uid}</b>\n\n" + _gi_character_lines(data)
+        else:
+            text = f"<b>🛠 Character Builds — {uid}</b>\n" + _gi_build_lines(data)
+        # Telegram message text is limited to 4096 characters.
+        edit_message(chat_id, wait["message_id"], text[:4000])
+    except ValueError as exc:
+        edit_message(chat_id, wait["message_id"], f"❌ {escape(str(exc))}")
+    except requests.RequestException as exc:
+        print(f"Enka request failed for {uid}: {exc}")
+        edit_message(chat_id, wait["message_id"], "❌ Could not reach Enka.Network. Please try again later.")
+    except Exception as exc:
+        print(f"Genshin command error ({command}, {uid}): {exc}")
+        edit_message(chat_id, wait["message_id"], "❌ Something went wrong while reading the Genshin profile. Please try again later.")
+
+
 # ------------------------- update dispatcher -------------------------
 
 def process_message(message):
@@ -2140,6 +2446,10 @@ def process_message(message):
         handle_topbooks(message)
     elif command == "/topusers" and is_private(message):
         handle_topusers(message)
+    elif command == "/genshinfeature" and is_private(message):
+        handle_genshin_feature(message, args)
+    elif command in ("/genshin", "/gi", "/gisave", "/gicharacters", "/gibuilds") and is_private(message):
+        handle_genshin_command(message, command, args)
     elif command in ("/setautodelete", "/autodelete") and is_private(message):
         handle_auto_delete(message, args)
     elif command == "/rename" and is_private(message):

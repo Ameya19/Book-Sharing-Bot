@@ -173,14 +173,6 @@ This bot helps you access books that are agreed to read by people in Annie's Boo
 /ping - Check bot response time
 /help - Show this help message
 
-<b>Genshin Impact:</b>
-/genshin - Genshin module help
-/gi UID - Look up a player profile
-/gi - View your saved profile
-/gisave UID - Save your Genshin UID
-/gicharacters - View showcase characters
-/gibuilds - View character builds, weapons and artifacts
-
 <b>Need help?</b>
 Contact the bot owner for support.</b>"""
 
@@ -189,32 +181,6 @@ Contact the bot owner for support.</b>"""
         disable_web_page_preview=True,
         quote=True
     )
-
-
-@Bot.on_message(filters.command('adminhelp') & filters.private & filters.user(ADMINS))
-async def admin_help_command(client: Client, message: Message):
-    admin_text = """<b>Annie's Bookshelf — Admin Help</b>
-
-<b>Book management</b>
-/files - List available books
-/genlink - Generate a book link
-/batch - Generate links for multiple posts
-/rename - Rename a book
-/removebook - Remove a book
-
-<b>Administration</b>
-/addadmin - Add an admin
-/removeadmin - Remove an admin
-/listadmins - List admins
-/users - View registered users
-/broadcast - Broadcast a message
-
-<b>Genshin Impact</b>
-/genshinfeature on - Enable Genshin for everyone
-/genshinfeature off - Disable Genshin for everyone
-/genshinfeature status - Check feature status
-"""
-    await message.reply_text(admin_text, disable_web_page_preview=True, quote=True)
 
 @Bot.on_message(filters.command('ping') & filters.private)
 async def ping_command(client: Client, message: Message):
